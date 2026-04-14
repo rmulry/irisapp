@@ -1,0 +1,600 @@
+"""
+Iris — AI Wedding Planning Assistant
+MVP: Onboarding conversation that builds a wedding profile
+"""
+
+import os
+import json
+from datetime import date
+import streamlit as st
+from anthropic import Anthropic
+from supabase import create_client
+from tavily import TavilyClient
+from dotenv import load_dotenv
+from this_or_that import CATEGORIES, VENDOR_CATEGORIES, get_filtered_categories, preload_images, build_extraction_prompt
+
+load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
+
+client = Anthropic()
+supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_ANON_KEY"])
+tavily = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+
+TODAY = date.today().strftime("%B %d, %Y")
+
+SYSTEM_PROMPT = f"""Today's date is {TODAY}. Always use this date for any timeline calculations.
+
+You are Iris, a warm and confident AI wedding planning assistant.
+Your job right now is to have a natural onboarding conversation to understand this couple
+and build their wedding profile. You are not a form — you are a friend who happens to know
+everything about weddings.
+
+Ask questions conversationally, one or two at a time. Don't overwhelm.
+Be warm, occasionally playful, and always reassuring. When someone seems stressed,
+acknowledge it before moving on.
+
+The user will tell you where they are in the planning process before the conversation starts.
+Use that to adapt your approach:
+- "Just got engaged" → start from the very beginning, build everything fresh
+- "A few months in" → first ask what's already booked or decided before making recommendations
+- "Further along / overwhelmed" → start by taking inventory of what exists, identify gaps, and bring calm and order
+
+You need to learn (in a natural conversational order, not as a list):
+
+STAGE & EXISTING BOOKINGS (if not starting from scratch):
+- What's already booked or decided? Never recommend something they already have.
+
+THE BASICS:
+- Wedding date and location (city/state)
+- Approximate guest count
+- Total budget
+
+THE DEEPER STUFF (what separates a real planner from a checklist):
+- How do you want guests to feel walking in? Walking out? What's the one thing you want people
+  to say the day after? (This is more useful than aesthetic categories.)
+- Who's involved in decisions — is it just the two of you, or are family members or financial
+  contributors who expect a say? This changes everything about how Iris helps.
+- What part of planning are you most dreading? (This tells Iris where to carry the most weight.)
+- Any prior commitments — have you already told people a date, promised a venue to family,
+  or accepted money with strings attached?
+
+CEREMONY:
+- Ceremony type (religious, civil, cultural traditions to incorporate)
+
+PRIORITIES & DELEGATION:
+- What matters MOST — the 2-3 things they want to be absolutely perfect
+- What they would happily delegate — things they don't want to spend energy on but still want
+  final approval over (common answers: cake, florals, invitations, transportation, linens,
+  stationery). Make clear that Iris will handle these and just check in before anything is booked.
+
+The delegation question is the most important. It tells you where to focus their energy and
+what you can handle for them.
+
+Once you have all of this, summarize their wedding profile back to them warmly and clearly,
+including which categories they've delegated to Iris. End the summary with the exact phrase:
+"Your Iris profile is ready."
+
+Then tell them exactly what to focus on first and why — but DO NOT search yet. Present the
+recommendation and ask for a green light. For example:
+"You're 10 months out, which means venue is the first thing we need to lock in — it sets
+your date, guest count, and almost every other vendor. Ready for me to find options?"
+
+Wait for their confirmation before using the search tool. Once they say yes, search and
+present results. Iris leads, but does not overwhelm.
+
+VENDOR SEARCH:
+You have a search_vendors tool. Use it only when:
+- The user has explicitly said yes, they're ready to look
+- The user directly asks to find or see vendors for a category
+Never search automatically after onboarding. Always get a green light first.
+
+When you get search results, present them clearly — name, brief description, and why they might
+be a fit based on what you know about the couple's budget and preferences. Always tie results
+back to their specific budget allocation. Be direct about which ones look most promising.
+
+If search results are thin or off-topic, acknowledge it and suggest the user search
+Instagram hashtags (e.g. #[city]weddingphotographer) for additional options.
+
+Never make up vendor names. Only present vendors that appear in actual search results.
+
+TONE WHEN REDIRECTING:
+Never apologize or say "I should have" or "I'm sorry." Just be confident and helpful.
+If you can't do something, pivot immediately to what you CAN do.
+
+BUDGET GUIDANCE:
+Always factor the total budget into every recommendation. Know these standard allocations:
+- Venue + catering: 40-50% of total budget
+- Photography: 10-12%
+- Florals: 8-10%
+- Videography: 6-8%
+- Music/DJ: 4-5%
+- Hair + makeup: 2-3%
+- Cake: 1-2%
+- Invitations + stationery: 2-3%
+- Transport: 2%
+- Remaining: attire, favors, misc
+
+Apply these to their actual budget number every time. A 60K budget means ~6-7K for photography.
+A 150K budget means ~15-18K for photography. Always be specific to their number.
+Never use dollar signs ($) in your responses — write out "dollars" or use "approx. 6,000 dollars"
+to avoid formatting issues.
+
+Never mention The Knot, WeddingWire, or Zola.
+
+Keep responses concise — 2-4 sentences max unless summarizing the profile or presenting vendors.
+Never ask more than two questions at once.
+Start by warmly welcoming them and asking the first question."""
+
+TOOLS = [
+    {
+        "name": "search_vendors",
+        "description": "Search for real local wedding vendors. Use this when the user is ready to see options for a vendor category, or when recommending next steps after onboarding.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "query": {
+                    "type": "string",
+                    "description": "Search query, e.g. 'wedding photographers in Austin Texas' or 'outdoor wedding venues Nashville TN'"
+                },
+                "category": {
+                    "type": "string",
+                    "description": "Vendor category, e.g. 'photographer', 'venue', 'florist', 'DJ', 'caterer'"
+                }
+            },
+            "required": ["query", "category"]
+        }
+    }
+]
+
+
+# ── Supabase helpers ───────────────────────────────────────────────────────────
+
+def load_messages(user_id: str) -> list:
+    result = supabase.table("messages") \
+        .select("role, content") \
+        .eq("session_id", user_id) \
+        .order("created_at") \
+        .execute()
+    return result.data or []
+
+
+def save_message(user_id: str, role: str, content: str):
+    supabase.table("messages").insert({
+        "session_id": user_id,
+        "role": role,
+        "content": content,
+    }).execute()
+
+
+def ensure_session(user_id: str):
+    supabase.table("sessions").upsert({"id": user_id}).execute()
+
+
+def get_profile_complete(messages: list) -> bool:
+    for m in messages:
+        if m["role"] == "assistant" and "Your Iris profile is ready." in m["content"]:
+            return True
+    return False
+
+
+def profile_already_saved(user_id: str) -> bool:
+    result = supabase.table("wedding_profiles") \
+        .select("session_id") \
+        .eq("session_id", user_id) \
+        .execute()
+    return len(result.data) > 0
+
+
+def extract_and_save_profile(user_id: str, messages: list):
+    conversation = "\n".join(
+        f"{m['role'].upper()}: {m['content']}" for m in messages
+    )
+    extraction_prompt = f"""Extract the wedding profile from this conversation and return ONLY valid JSON.
+Use null for any field not mentioned.
+
+Conversation:
+{conversation}
+
+Return this exact JSON structure:
+{{
+  "wedding_date": "YYYY-MM-DD or null",
+  "city": "city name or null",
+  "state": "state name or null",
+  "guest_count": number or null,
+  "total_budget": number or null,
+  "ceremony_type": "description or null",
+  "priorities": ["list of top priorities"],
+  "dont_cares": ["list of delegated categories"]
+}}"""
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=500,
+            messages=[{"role": "user", "content": extraction_prompt}],
+        )
+        import json
+        text = response.content[0].text.strip()
+        # Strip markdown code fences if present
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        data = json.loads(text.strip())
+        supabase.table("wedding_profiles").upsert({
+            "session_id": user_id,
+            "wedding_date": data.get("wedding_date"),
+            "city": data.get("city"),
+            "state": data.get("state"),
+            "guest_count": data.get("guest_count"),
+            "total_budget": data.get("total_budget"),
+            "ceremony_type": data.get("ceremony_type"),
+            "priorities": data.get("priorities", []),
+            "dont_cares": data.get("dont_cares", []),
+            "profile_complete": True,
+        }).execute()
+    except Exception:
+        pass  # Silent fail — don't break the chat
+
+
+# ── Vendor search ──────────────────────────────────────────────────────────────
+
+def search_vendors(query: str, category: str) -> str:
+    try:
+        results = tavily.search(query=query, max_results=5, search_depth="basic")
+        items = results.get("results", [])
+        if not items:
+            return "No results found for this search."
+        lines = []
+        for r in items:
+            title = r.get("title", "").strip()
+            url = r.get("url", "").strip()
+            snippet = r.get("content", "").strip()[:300]
+            lines.append(f"**{title}**\n{url}\n{snippet}")
+        return "\n\n---\n\n".join(lines)
+    except Exception as e:
+        return f"Search unavailable: {str(e)}"
+
+
+# ── Agentic chat loop ──────────────────────────────────────────────────────────
+
+def chat(messages: list) -> str:
+    # Work on a local copy so tool-use intermediate steps don't pollute stored messages
+    api_messages = list(messages)
+
+    while True:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2048,
+            system=SYSTEM_PROMPT,
+            tools=TOOLS,
+            messages=api_messages,
+        )
+
+        if response.stop_reason == "tool_use":
+            tool_results = []
+            for block in response.content:
+                if block.type == "tool_use":
+                    if block.name == "search_vendors":
+                        result_text = search_vendors(
+                            block.input["query"],
+                            block.input["category"]
+                        )
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result_text,
+                        })
+
+            # Append assistant turn + tool results and loop
+            api_messages.append({"role": "assistant", "content": response.content})
+            api_messages.append({"role": "user", "content": tool_results})
+
+        else:
+            # Final response — extract text
+            for block in response.content:
+                if hasattr(block, "text"):
+                    return block.text
+            return ""
+
+
+# ── Page config ───────────────────────────────────────────────────────────────
+
+st.set_page_config(
+    page_title="Iris — Wedding Planning",
+    page_icon="🌸",
+    layout="centered",
+)
+
+st.markdown("""
+<style>
+    .main { max-width: 700px; margin: 0 auto; }
+    .stChatMessage { padding: 0.5rem 0; }
+    h1 { color: #6B4C8A; }
+    .iris-tagline { color: #9B7AB8; font-size: 1rem; margin-top: -1rem; margin-bottom: 2rem; }
+</style>
+""", unsafe_allow_html=True)
+
+st.title("🌸 Iris")
+st.markdown('<p class="iris-tagline">Make confident decisions faster.</p>', unsafe_allow_html=True)
+
+# ── Auth state ────────────────────────────────────────────────────────────────
+
+if "user" not in st.session_state:
+    st.session_state.user = None
+
+if "auth_mode" not in st.session_state:
+    st.session_state.auth_mode = "login"
+
+# ── Auth screen ───────────────────────────────────────────────────────────────
+
+if st.session_state.user is None:
+    if st.session_state.auth_mode == "login":
+        st.subheader("Welcome back")
+        email = st.text_input("Email", key="login_email")
+        password = st.text_input("Password", type="password", key="login_password")
+
+        if st.button("Sign in", use_container_width=True, type="primary"):
+            try:
+                result = supabase.auth.sign_in_with_password({"email": email, "password": password})
+                st.session_state.user = result.user
+                st.rerun()
+            except Exception:
+                st.error("Invalid email or password.")
+
+        if st.button("Create an account", use_container_width=True):
+            st.session_state.auth_mode = "signup"
+            st.rerun()
+
+    else:
+        st.subheader("Create your account")
+        email = st.text_input("Email", key="signup_email")
+        password = st.text_input("Password (min 6 characters)", type="password", key="signup_password")
+
+        if st.button("Get started", use_container_width=True, type="primary"):
+            try:
+                result = supabase.auth.sign_up({"email": email, "password": password})
+                st.session_state.user = result.user
+                st.rerun()
+            except Exception:
+                st.error("Something went wrong. Try again.")
+
+        if st.button("Already have an account? Sign in", use_container_width=True):
+            st.session_state.auth_mode = "login"
+            st.rerun()
+
+    st.stop()
+
+# ── Logged in — load session ──────────────────────────────────────────────────
+
+user_id = st.session_state.user.id
+
+if "messages" not in st.session_state:
+    ensure_session(user_id)
+    st.session_state.messages = load_messages(user_id)
+
+if "profile_complete" not in st.session_state:
+    st.session_state.profile_complete = False
+
+if "planning_stage" not in st.session_state:
+    st.session_state.planning_stage = None
+
+if "tot_complete" not in st.session_state:
+    st.session_state.tot_complete = False
+
+if "tot_selections" not in st.session_state:
+    st.session_state.tot_selections = []
+
+if "tot_cat_idx" not in st.session_state:
+    st.session_state.tot_cat_idx = 0
+
+if "tot_pair_idx" not in st.session_state:
+    st.session_state.tot_pair_idx = 0
+
+if "user_priorities" not in st.session_state:
+    st.session_state.user_priorities = None
+
+if "user_delegated" not in st.session_state:
+    st.session_state.user_delegated = None
+
+if "filtered_categories" not in st.session_state:
+    st.session_state.filtered_categories = None
+
+# ── Sign out ──────────────────────────────────────────────────────────────────
+
+with st.sidebar:
+    st.caption(f"Signed in as {st.session_state.user.email}")
+    if st.button("Sign out"):
+        supabase.auth.sign_out()
+        for key in ["user", "messages", "profile_complete", "auth_mode"]:
+            st.session_state.pop(key, None)
+        st.rerun()
+
+# ── This or That helpers ──────────────────────────────────────────────────────
+
+def extract_and_save_aesthetic(user_id: str, selections: list):
+    prompt = build_extraction_prompt(selections)
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=600,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text.strip()
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        data = json.loads(text.strip())
+        supabase.table("wedding_profiles").upsert({
+            "session_id": user_id,
+            "aesthetic_profile": data,
+        }).execute()
+        return data
+    except Exception:
+        return {}
+
+
+# ── Step 1: Planning stage ────────────────────────────────────────────────────
+
+if not st.session_state.messages and st.session_state.planning_stage is None:
+    st.markdown("### Where are you in the planning process?")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("💍 Just got engaged\nStarting from scratch", use_container_width=True):
+            st.session_state.planning_stage = "Just got engaged — starting from scratch."
+            st.rerun()
+    with col2:
+        if st.button("📋 A few months in\nHave some things figured out", use_container_width=True):
+            st.session_state.planning_stage = "A few months in — have some things already figured out or booked."
+            st.rerun()
+    with col3:
+        if st.button("😅 Further along\nOverwhelmed, need help", use_container_width=True):
+            st.session_state.planning_stage = "Further along in planning — feeling overwhelmed and need help getting organized."
+            st.rerun()
+    st.stop()
+
+# ── Step 2: Priorities & delegation ──────────────────────────────────────────
+
+if not st.session_state.messages and st.session_state.user_priorities is None:
+    st.markdown("### What matters most to you?")
+    st.caption("Select everything you want to be hands-on with.")
+    priorities = st.multiselect(
+        "I want to personally decide:",
+        VENDOR_CATEGORIES,
+        default=["Venue", "Photography"],
+        label_visibility="collapsed",
+    )
+
+    st.markdown("### What would you happily hand off?")
+    st.caption("Iris will handle these and only check in before anything is booked.")
+    remaining = [c for c in VENDOR_CATEGORIES if c not in priorities]
+    delegated = st.multiselect(
+        "Iris can handle:",
+        remaining,
+        label_visibility="collapsed",
+    )
+
+    if st.button("Continue", type="primary", use_container_width=True):
+        st.session_state.user_priorities = priorities
+        st.session_state.user_delegated = delegated
+        st.session_state.filtered_categories = get_filtered_categories(priorities, delegated)
+        st.rerun()
+    st.stop()
+
+# ── Step 3: This or That game ─────────────────────────────────────────────────
+
+if st.session_state.planning_stage and not st.session_state.tot_complete:
+    filtered_cats = st.session_state.filtered_categories or []
+
+    # Skip game entirely if no categories to show
+    if not filtered_cats:
+        st.session_state.tot_complete = True
+        st.rerun()
+
+    preload_images(st.session_state, filtered_cats)
+
+    cat = filtered_cats[st.session_state.tot_cat_idx]
+    pair = cat["pairs"][st.session_state.tot_pair_idx]
+    total_pairs = sum(len(c["pairs"]) for c in filtered_cats)
+    done_pairs = sum(len(filtered_cats[i]["pairs"]) for i in range(st.session_state.tot_cat_idx)) + st.session_state.tot_pair_idx
+
+    st.markdown(f"### {cat['label']}")
+    st.caption(cat["instruction"])
+    st.progress(done_pairs / total_pairs)
+
+    key_a = f"{cat['name']}_{st.session_state.tot_pair_idx}_a"
+    key_b = f"{cat['name']}_{st.session_state.tot_pair_idx}_b"
+    img_a = st.session_state["tot_images"].get(key_a, "")
+    img_b = st.session_state["tot_images"].get(key_b, "")
+
+    def advance(chosen, rejected, cat, filtered_cats):
+        st.session_state.tot_selections.append({
+            "category": cat["name"],
+            "chosen_label": chosen["label"],
+            "chosen_query": chosen["query"],
+            "rejected_label": rejected["label"],
+            "rejected_query": rejected["query"],
+        })
+        next_pair = st.session_state.tot_pair_idx + 1
+        if next_pair >= len(cat["pairs"]):
+            next_cat = st.session_state.tot_cat_idx + 1
+            if next_cat >= len(filtered_cats):
+                st.session_state.tot_complete = True
+                extract_and_save_aesthetic(user_id, st.session_state.tot_selections)
+            else:
+                st.session_state.tot_cat_idx = next_cat
+                st.session_state.tot_pair_idx = 0
+        else:
+            st.session_state.tot_pair_idx = next_pair
+
+    col1, col2 = st.columns(2)
+    with col1:
+        if img_a:
+            st.image(img_a, use_container_width=True)
+        if st.button(pair["a"]["label"], use_container_width=True, type="primary", key="btn_a"):
+            advance(pair["a"], pair["b"], cat, filtered_cats)
+            st.rerun()
+    with col2:
+        if img_b:
+            st.image(img_b, use_container_width=True)
+        if st.button(pair["b"]["label"], use_container_width=True, type="primary", key="btn_b"):
+            advance(pair["b"], pair["a"], cat, filtered_cats)
+            st.rerun()
+
+    st.stop()
+
+# ── Start conversation if empty ───────────────────────────────────────────────
+
+if not st.session_state.messages and st.session_state.planning_stage:
+    parts = [st.session_state.planning_stage]
+    if st.session_state.user_priorities:
+        parts.append(f"Things I want to personally decide: {', '.join(st.session_state.user_priorities)}.")
+    if st.session_state.user_delegated:
+        parts.append(f"Things I'm happy to hand off to Iris: {', '.join(st.session_state.user_delegated)}.")
+    if st.session_state.tot_selections:
+        prefs = [f"{s['category']}: chose {s['chosen_label']} over {s['rejected_label']}"
+                 for s in st.session_state.tot_selections]
+        parts.append("Aesthetic preferences from style quiz: " + ", ".join(prefs) + ".")
+    seed = " ".join(parts)
+    with st.spinner(""):
+        opening = chat([{"role": "user", "content": seed}])
+    save_message(user_id, "assistant", opening)
+    st.session_state.messages.append({"role": "assistant", "content": opening})
+
+# ── Render chat history ───────────────────────────────────────────────────────
+
+for msg in st.session_state.messages:
+    with st.chat_message("assistant" if msg["role"] == "assistant" else "user",
+                         avatar="🌸" if msg["role"] == "assistant" else "👤"):
+        content = msg["content"].replace("$", r"\$")
+        st.markdown(content)
+
+# ── Profile complete state ────────────────────────────────────────────────────
+
+if get_profile_complete(st.session_state.messages):
+    st.session_state.profile_complete = True
+
+if st.session_state.profile_complete:
+    st.success("✓ Your wedding profile is ready. More features coming soon!")
+
+# ── Input ─────────────────────────────────────────────────────────────────────
+
+if prompt := st.chat_input("Tell Iris..."):
+    save_message(user_id, "user", prompt)
+    st.session_state.messages.append({"role": "user", "content": prompt})
+    with st.chat_message("user", avatar="👤"):
+        st.write(prompt)
+
+    with st.chat_message("assistant", avatar="🌸"):
+        with st.spinner(""):
+            reply = chat(st.session_state.messages)
+        st.markdown(reply.replace("$", r"\$"))
+
+    save_message(user_id, "assistant", reply)
+    st.session_state.messages.append({"role": "assistant", "content": reply})
+
+    # Extract and save profile if just completed
+    if get_profile_complete(st.session_state.messages) and not profile_already_saved(user_id):
+        extract_and_save_profile(user_id, st.session_state.messages)
+
+    st.rerun()
