@@ -791,7 +791,12 @@ st.markdown('<p class="iris-tagline">Make confident decisions faster.</p>', unsa
 # ── Pre-auth session state ────────────────────────────────────────────────────
 
 if "user" not in st.session_state:
-    st.session_state.user = None
+    # Try to restore session from Supabase
+    try:
+        session = supabase.auth.get_session()
+        st.session_state.user = session.user if session else None
+    except Exception:
+        st.session_state.user = None
 
 if "auth_mode" not in st.session_state:
     st.session_state.auth_mode = "signup"
