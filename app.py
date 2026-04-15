@@ -421,7 +421,7 @@ def draft_vendor_email(vendor_name: str, vendor_category: str, vendor_url: str, 
     questions = VENDOR_QUESTIONS.get(vendor_category.lower(),
         "availability, pricing, and what's included in your packages")
 
-    prompt = f"""Draft a warm, professional wedding vendor inquiry email.
+    prompt = f"""Draft a short, casual wedding vendor inquiry email that sounds like a real person wrote it.
 
 Vendor: {vendor_name}
 Vendor type: {vendor_category}
@@ -430,19 +430,35 @@ Location: {city}, {state}
 Guest count: {guest_count}
 Budget for this vendor: {budget_line}
 
-Write a genuine, specific inquiry. Include:
-- Warm intro with wedding date and location
-- Honest mention of budget range
-- Specific questions about: {questions}
-- Request for availability confirmation
-- Professional closing
-
-Keep it under 180 words. Warm but not overly casual. No filler phrases like "I hope this email finds you well."
+Rules:
+- Sound like a normal person texting a friend, not a business letter
+- No bullet points. Flowing sentences only.
+- No words like: genuinely, truly, excited, thrilled, delighted, reach out, celebration, inquire, pleased
+- No "I hope this finds you well" or any filler opener
+- Mention the date and rough guest count naturally in the first sentence
+- Ask about: {questions}
+- Mention the budget honestly and casually — not as a demand, just so they know upfront
+- Keep it under 150 words
+- Sign off casually, first name only
 
 Format exactly as:
 Subject: [subject line]
 
 [email body]"""
+
+    # Try to find contact email via Tavily
+    contact_info = ""
+    try:
+        search_q = f"{vendor_name} {city} {vendor_category} contact email"
+        results = tavily.search(query=search_q, max_results=2, search_depth="basic")
+        snippets = " ".join(r.get("content", "") for r in results.get("results", []))
+        # Look for email pattern in results
+        import re
+        emails = re.findall(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", snippets)
+        if emails:
+            contact_info = f"\n\nContact email found: {emails[0]}"
+    except Exception:
+        pass
 
     try:
         response = client.messages.create(
@@ -451,7 +467,7 @@ Subject: [subject line]
             messages=[{"role": "user", "content": prompt}],
         )
         email_text = response.content[0].text.strip()
-        return f"IRIS_EMAIL_DRAFT_START\n{email_text}\nIRIS_EMAIL_DRAFT_END"
+        return f"IRIS_EMAIL_DRAFT_START\n{email_text}{contact_info}\nIRIS_EMAIL_DRAFT_END"
     except Exception as e:
         return f"Could not draft email: {str(e)}"
 
