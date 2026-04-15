@@ -412,7 +412,7 @@ JUNK_DOMAINS = {"example.com", "sentry.io", "wixpress.com", "squarespace.com",
                 "wordpress.com", "googleapis.com", "schema.org"}
 
 
-def find_vendor_contact(vendor_url: str) -> tuple:
+def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
     """Returns (email_or_None, contact_url_or_None) by fetching the vendor site."""
     if not vendor_url:
         return None, None
@@ -421,11 +421,14 @@ def find_vendor_contact(vendor_url: str) -> tuple:
         found = EMAIL_PATTERN.findall(text)
         return [e for e in found if e.split("@")[-1].lower() not in JUNK_DOMAINS]
 
-    base_url = vendor_url.rstrip("/")
+    from urllib.parse import urlparse
+    parsed = urlparse(vendor_url)
+    base_url = f"{parsed.scheme}://{parsed.netloc}"
 
     # Step 1: Fetch homepage
+    content = ""
     try:
-        result = tavily.extract(urls=[vendor_url])
+        result = tavily.extract(urls=[base_url])
         content = result.get("results", [{}])[0].get("raw_content", "")
         emails = clean_emails(content)
         if emails:
@@ -463,6 +466,37 @@ def find_vendor_contact(vendor_url: str) -> tuple:
     if "contact" in content.lower():
         return None, contact_url
 
+    # Step 5: Search for the vendor's official website and try again
+    if vendor_name:
+        try:
+            search_result = tavily.search(
+                query=f"{vendor_name} official website contact",
+                max_results=3,
+                search_depth="basic"
+            )
+            for r in search_result.get("results", []):
+                found_url = r.get("url", "")
+                found_parsed = urlparse(found_url)
+                found_base = f"{found_parsed.scheme}://{found_parsed.netloc}"
+                # Skip aggregator sites
+                if any(x in found_base for x in ["theknot", "weddingwire", "yelp", "zola", "weddingly"]):
+                    continue
+                # Try /contact on this site
+                try:
+                    r2 = tavily.extract(urls=[found_base + "/contact"])
+                    c2 = r2.get("results", [{}])[0].get("raw_content", "")
+                    emails = clean_emails(c2)
+                    if emails:
+                        return emails[0], None
+                    if c2:
+                        return None, found_base + "/contact"
+                except Exception:
+                    pass
+                if found_base != base_url:
+                    break
+        except Exception:
+            pass
+
     return None, None
 
 
@@ -482,7 +516,7 @@ def draft_vendor_email(vendor_name: str, vendor_category: str, vendor_url: str, 
         "availability, pricing, and what's included in your packages")
 
     # Find contact info by crawling the vendor's site
-    contact_email, contact_form_url = find_vendor_contact(vendor_url)
+    contact_email, contact_form_url = find_vendor_contact(vendor_url, vendor_name)
     if contact_email:
         contact_line = f"\n\nSend to: {contact_email}"
     elif contact_form_url:
