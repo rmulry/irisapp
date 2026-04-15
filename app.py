@@ -910,12 +910,40 @@ def render_message(content: str):
         parts = content.split("IRIS_EMAIL_DRAFT_START")
         before = parts[0].replace("$", r"\$")
         rest = parts[1].split("IRIS_EMAIL_DRAFT_END")
-        draft = rest[0].strip()
+        draft_block = rest[0].strip()
         after = rest[1].replace("$", r"\$") if len(rest) > 1 else ""
+
+        # Separate contact line from email body
+        contact_line = ""
+        form_url = None
+        email_body = draft_block
+        for line in draft_block.split("\n"):
+            if line.startswith("Send to:"):
+                contact_line = line
+                email_body = draft_block.replace(line, "").strip()
+            elif line.startswith("No email found"):
+                # Extract URL from the line
+                import re
+                urls = re.findall(r"https?://\S+", line)
+                form_url = urls[0] if urls else None
+                email_body = draft_block.replace(line, "").strip()
+            elif line.startswith("No contact email found"):
+                contact_line = line
+                email_body = draft_block.replace(line, "").strip()
+
         if before.strip():
             st.markdown(before)
-        st.markdown("**📧 Draft email — copy and send from your own inbox:**")
-        st.code(draft, language=None)
+
+        if contact_line:
+            st.markdown(f"**{contact_line}**")
+
+        st.markdown("**📧 Copy this message:**")
+        st.code(email_body, language=None)
+
+        if form_url:
+            st.markdown(f"**No email found — paste this message into their contact form:**")
+            st.markdown(f"[Open contact form →]({form_url})")
+
         if after.strip():
             st.markdown(after)
     else:
