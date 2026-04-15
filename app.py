@@ -46,6 +46,8 @@ STAGE & EXISTING BOOKINGS (if not starting from scratch):
 - What's already booked or decided? Never recommend something they already have.
 
 THE BASICS:
+- Their first name (and their partner's name)
+- Phone number (so vendor emails can include real contact info)
 - Wedding date and location (city/state)
 - Approximate guest count
 - Total budget
@@ -421,7 +423,9 @@ Return this exact JSON structure:
   "total_budget": number or null,
   "ceremony_type": "description or null",
   "priorities": ["list of top priorities"],
-  "dont_cares": ["list of delegated categories"]
+  "dont_cares": ["list of delegated categories"],
+  "user_name": "first name of the person planning (not their partner) or null",
+  "user_phone": "their phone number or null"
 }}"""
 
     try:
@@ -448,6 +452,8 @@ Return this exact JSON structure:
             "ceremony_type": data.get("ceremony_type"),
             "priorities": data.get("priorities", []),
             "dont_cares": data.get("dont_cares", []),
+            "user_name": data.get("user_name"),
+            "user_phone": data.get("user_phone"),
             "profile_complete": True,
         }).execute()
     except Exception:
@@ -458,7 +464,7 @@ Return this exact JSON structure:
 
 def load_wedding_profile(user_id: str) -> dict:
     result = supabase.table("wedding_profiles") \
-        .select("wedding_date, city, state, guest_count, total_budget") \
+        .select("wedding_date, city, state, guest_count, total_budget, user_name, user_phone") \
         .eq("session_id", user_id) \
         .execute()
     return result.data[0] if result.data else {}
@@ -565,10 +571,9 @@ def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
 def draft_vendor_email(vendor_name: str, vendor_category: str, vendor_url: str, user_id: str) -> str:
     profile = load_wedding_profile(user_id)
     wedding_date = profile.get("wedding_date", "")
-    city = profile.get("city", "")
-    state = profile.get("state", "")
     guest_count = profile.get("guest_count", "")
-    total_budget = profile.get("total_budget") or 0
+    user_name = profile.get("user_name") or "your name"
+    user_phone = profile.get("user_phone") or ""
 
     # Find contact info by crawling the vendor's site
     contact_email, contact_form_url = find_vendor_contact(vendor_url, vendor_name)
@@ -579,13 +584,16 @@ def draft_vendor_email(vendor_name: str, vendor_category: str, vendor_url: str, 
     else:
         contact_line = "\n\nNo contact email found. Check their website directly."
 
+    phone_line = f"\nPhone: {user_phone}" if user_phone else ""
+
     prompt = f"""Draft a short, casual first-touch email to a wedding vendor checking availability.
 
 Vendor: {vendor_name}
 Vendor type: {vendor_category}
 Wedding date: {wedding_date}
-Location: {city}, {state}
 Guest count: {guest_count}
+Sender name: {user_name}
+Sender phone: {user_phone if user_phone else "not provided"}
 
 Rules:
 - Sound like a real person, not a business letter
@@ -595,7 +603,8 @@ Rules:
 - Keep it simple: mention the date and guest count, ask if they're available, and ask what the next step is if they are
 - Do NOT ask about pricing, packages, or logistics — this is just a first check-in
 - Keep it under 100 words
-- Sign off casually, first name only
+- Sign off with the sender's real name
+- If a phone number is provided, include it in the sign-off
 
 Format exactly as:
 Subject: [subject line]
