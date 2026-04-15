@@ -127,13 +127,18 @@ to avoid formatting issues.
 
 Never mention The Knot, WeddingWire, or Zola.
 
-VENDOR EMAIL DRAFTING:
+VENDOR EMAIL DRAFTING & TRACKING:
 After presenting vendor options, always offer to draft the inquiry email.
 Use the draft_vendor_email tool when the user wants to reach out to a specific vendor.
 After drafting, tell them to copy it and send from their own email.
 Then ask: who else on the list do you want to reach out to?
-Track who they've contacted and who they're waiting to hear back from.
-When they get a response, offer to help them evaluate it.
+
+When the user tells you a vendor responded, use update_vendor_status to log it.
+When they say a vendor is unavailable, update to "unavailable".
+When they book someone, update to "booked" and offer to draft "no thank you" emails to others in that category.
+When they decide to pass on a vendor, update to "passed".
+If they mention a price quoted, capture it in quoted_price.
+Always acknowledge the update conversationally — don't just silently call the tool.
 
 Keep responses concise — 2-4 sentences max unless summarizing the profile or presenting vendors.
 Never ask more than two questions at once.
@@ -179,12 +184,86 @@ TOOLS = [
             },
             "required": ["vendor_name", "vendor_category"]
         }
+    },
+    {
+        "name": "update_vendor_status",
+        "description": "Update the status of a vendor the user has been tracking. Use this when the user reports back on a vendor response, books someone, or decides to pass.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "vendor_name": {
+                    "type": "string",
+                    "description": "Name of the vendor to update"
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["researching", "contacted", "responded", "meeting_scheduled", "booked", "passed", "unavailable"],
+                    "description": "New status for the vendor"
+                },
+                "notes": {
+                    "type": "string",
+                    "description": "Notes about their response, what they said, etc."
+                },
+                "quoted_price": {
+                    "type": "number",
+                    "description": "Price quoted by the vendor if they provided one"
+                }
+            },
+            "required": ["vendor_name", "status"]
+        }
     }
 ]
 
 
 
 # ── Supabase helpers ───────────────────────────────────────────────────────────
+
+def log_vendor(user_id: str, name: str, category: str, url: str,
+               contact_email: str, contact_form_url: str):
+    """Insert or update a vendor record. If vendor already exists, just update contacted_at."""
+    existing = supabase.table("vendors") \
+        .select("id") \
+        .eq("session_id", user_id) \
+        .ilike("name", name) \
+        .execute()
+    if existing.data:
+        return  # Already logged
+    supabase.table("vendors").insert({
+        "session_id": user_id,
+        "name": name,
+        "category": category,
+        "url": url,
+        "contact_email": contact_email,
+        "contact_form_url": contact_form_url,
+        "status": "contacted",
+        "contacted_at": date.today().isoformat(),
+    }).execute()
+
+
+def load_vendors(user_id: str) -> list:
+    result = supabase.table("vendors") \
+        .select("*") \
+        .eq("session_id", user_id) \
+        .order("created_at") \
+        .execute()
+    return result.data or []
+
+
+def update_vendor(user_id: str, name: str, status: str,
+                  notes: str = None, quoted_price: float = None):
+    update = {"status": status}
+    if notes:
+        update["notes"] = notes
+    if quoted_price:
+        update["quoted_price"] = quoted_price
+    if status == "responded":
+        update["responded_at"] = date.today().isoformat()
+    supabase.table("vendors") \
+        .update(update) \
+        .eq("session_id", user_id) \
+        .ilike("name", name) \
+        .execute()
+
 
 def load_messages(user_id: str) -> list:
     result = supabase.table("messages") \
@@ -527,6 +606,11 @@ Subject: [subject line]
             messages=[{"role": "user", "content": prompt}],
         )
         email_text = response.content[0].text.strip()
+        try:
+            log_vendor(user_id, vendor_name, vendor_category, vendor_url,
+                       contact_email or "", contact_form_url or "")
+        except Exception:
+            pass
         return f"IRIS_EMAIL_DRAFT_START\n{email_text}{contact_line}\nIRIS_EMAIL_DRAFT_END"
     except Exception as e:
         return f"Could not draft email: {str(e)}"
@@ -639,6 +723,23 @@ def chat(messages: list, current_user_id: str = "") -> str:
                             block.input.get("vendor_url", ""),
                             current_user_id,
                         )
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result_text,
+                        })
+                    elif block.name == "update_vendor_status":
+                        try:
+                            update_vendor(
+                                current_user_id,
+                                block.input["vendor_name"],
+                                block.input["status"],
+                                block.input.get("notes"),
+                                block.input.get("quoted_price"),
+                            )
+                            result_text = f"Updated {block.input['vendor_name']} to {block.input['status']}."
+                        except Exception as e:
+                            result_text = f"Could not update vendor: {str(e)}"
                         tool_results.append({
                             "type": "tool_result",
                             "tool_use_id": block.id,
@@ -779,11 +880,17 @@ if "filtered_categories" not in st.session_state:
 if "timeline" not in st.session_state:
     st.session_state.timeline = None
 
+if "vendors" not in st.session_state:
+    st.session_state.vendors = None
+
 # ── Sign out + Timeline sidebar ───────────────────────────────────────────────
 
-# Load timeline from DB on return visits
+# Load timeline and vendors from DB on return visits
 if st.session_state.timeline is None and st.session_state.profile_complete:
     st.session_state.timeline = load_timeline(user_id)
+
+if st.session_state.vendors is None:
+    st.session_state.vendors = load_vendors(user_id)
 
 with st.sidebar:
     st.caption(f"Signed in as {st.session_state.user.email}")
@@ -822,6 +929,37 @@ with st.sidebar:
                 optional = " *(optional)*" if e.get("optional") else ""
                 suggested = e.get("suggested_date", "TBD")
                 st.markdown(f"• {e['event']}{optional}  \n*{suggested}*")
+
+    # ── Vendor Tracker ────────────────────────────────────────────────────
+    vendors = st.session_state.vendors or []
+    if vendors:
+        st.divider()
+        st.markdown("**Vendor Tracker**")
+        STATUS_ICON = {
+            "researching": "🔍",
+            "contacted": "📤",
+            "responded": "💬",
+            "meeting_scheduled": "📅",
+            "booked": "✅",
+            "passed": "❌",
+            "unavailable": "🚫",
+        }
+        by_category = {}
+        for v in vendors:
+            cat = v.get("category", "Other").title()
+            by_category.setdefault(cat, []).append(v)
+        for cat, cat_vendors in by_category.items():
+            st.caption(cat)
+            for v in cat_vendors:
+                icon = STATUS_ICON.get(v.get("status", "contacted"), "📤")
+                name = v.get("name", "")
+                quote = v.get("quoted_price")
+                quote_str = f" · ~{int(quote):,}" if quote else ""
+                notes = v.get("notes", "")
+                label = f"{icon} {name}{quote_str}"
+                if notes:
+                    label += f"  \n*{notes[:60]}*"
+                st.markdown(label)
 
 # ── This or That helpers ──────────────────────────────────────────────────────
 
@@ -1035,6 +1173,7 @@ if prompt := st.chat_input("Tell Iris..."):
 
     save_message(user_id, "assistant", reply)
     st.session_state.messages.append({"role": "assistant", "content": reply})
+    st.session_state.vendors = load_vendors(user_id)
 
     # Extract profile and generate timeline when onboarding completes
     if get_profile_complete(st.session_state.messages):
