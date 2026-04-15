@@ -180,20 +180,6 @@ TOOLS = [
     }
 ]
 
-VENDOR_QUESTIONS = {
-    "photographer": "date availability, packages and pricing, whether a second shooter is included, full gallery delivery timeline, and image rights",
-    "videographer": "date availability, packages, highlight reel length, whether raw footage is included, and delivery timeline",
-    "venue": "availability on the date, rental period length, catering policy (in-house or outside vendors), capacity, parking situation, and getting-ready space",
-    "florist": "availability, whether they can work within the budget, their style specialty, and what's included in a typical quote",
-    "dj": "availability, how long they play, whether they handle MC duties, how they handle song requests, and what equipment they bring",
-    "band": "availability, number of sets and set length, their song list, whether they learn new songs, and space/power requirements",
-    "caterer": "per-head pricing, service style options, how they handle dietary restrictions, whether a tasting is included, and staffing ratios",
-    "hair": "availability, whether they travel to the venue, whether a trial session is included, and how many people they can accommodate in a morning",
-    "makeup": "availability, whether they travel to the venue, trial session policy, and what products they use",
-    "cake": "availability, whether they offer tastings, flavor options, delivery and setup logistics, and pricing structure",
-    "officiant": "availability, whether they customize the ceremony, how many meetings are included, and whether they file the paperwork",
-    "transportation": "vehicle options and capacity, availability, pricing structure, and whether gratuity is included",
-}
 
 
 # ── Supabase helpers ───────────────────────────────────────────────────────────
@@ -508,13 +494,6 @@ def draft_vendor_email(vendor_name: str, vendor_category: str, vendor_url: str, 
     guest_count = profile.get("guest_count", "")
     total_budget = profile.get("total_budget") or 0
 
-    pct = BUDGET_PCTS.get(vendor_category.lower(), 0.10)
-    vendor_budget = int(total_budget * pct) if total_budget else None
-    budget_line = f"approx. {vendor_budget} dollars" if vendor_budget else "within our overall budget"
-
-    questions = VENDOR_QUESTIONS.get(vendor_category.lower(),
-        "availability, pricing, and what's included in your packages")
-
     # Find contact info by crawling the vendor's site
     contact_email, contact_form_url = find_vendor_contact(vendor_url, vendor_name)
     if contact_email:
@@ -524,24 +503,22 @@ def draft_vendor_email(vendor_name: str, vendor_category: str, vendor_url: str, 
     else:
         contact_line = "\n\nNo contact email found. Check their website directly."
 
-    prompt = f"""Draft a short, casual wedding vendor inquiry email that sounds like a real person wrote it.
+    prompt = f"""Draft a short, casual first-touch email to a wedding vendor checking availability.
 
 Vendor: {vendor_name}
 Vendor type: {vendor_category}
 Wedding date: {wedding_date}
 Location: {city}, {state}
 Guest count: {guest_count}
-Budget for this vendor: {budget_line}
 
 Rules:
-- Sound like a normal person texting a friend, not a business letter
+- Sound like a real person, not a business letter
 - No bullet points. Flowing sentences only.
 - No words like: genuinely, truly, excited, thrilled, delighted, reach out, celebration, inquire, pleased
 - No "I hope this finds you well" or any filler opener
-- Mention the date and rough guest count naturally in the first sentence
-- Ask about: {questions}
-- Mention the budget honestly and casually — not as a demand, just so they know upfront
-- Keep it under 150 words
+- Keep it simple: mention the date and guest count, ask if they're available, and ask what the next step is if they are
+- Do NOT ask about pricing, packages, or logistics — this is just a first check-in
+- Keep it under 100 words
 - Sign off casually, first name only
 
 Format exactly as:
