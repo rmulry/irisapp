@@ -534,18 +534,70 @@ Subject: [subject line]
 
 # ── Vendor search ──────────────────────────────────────────────────────────────
 
+AGGREGATOR_DOMAINS = {
+    "theknot.com", "weddingwire.com", "yelp.com", "zola.com",
+    "weddingly.com", "junebugweddings.com", "stylemepretty.com",
+    "brides.com", "weddingspot.com", "perfectweddingguide.com",
+    "thumbtack.com", "gigsalad.com", "bark.com",
+}
+
+def is_aggregator(url: str) -> bool:
+    from urllib.parse import urlparse
+    domain = urlparse(url).netloc.lower().lstrip("www.")
+    return any(agg in domain for agg in AGGREGATOR_DOMAINS)
+
+def find_official_url_from_aggregator(aggregator_url: str) -> str | None:
+    """Scrape an aggregator listing page and find the vendor's official website link."""
+    try:
+        result = firecrawl.scrape_url(aggregator_url, formats=["markdown"])
+        content = result.get("markdown", "") or ""
+        # Look for "website" or "visit" links in the content
+        import re
+        # Find URLs that aren't the aggregator itself
+        urls = re.findall(r'https?://[^\s\)\]\"]+', content)
+        for u in urls:
+            if not is_aggregator(u) and "javascript" not in u.lower():
+                from urllib.parse import urlparse
+                parsed = urlparse(u)
+                if parsed.netloc and parsed.scheme in ("http", "https"):
+                    return f"{parsed.scheme}://{parsed.netloc}"
+    except Exception:
+        pass
+    return None
+
 def search_vendors(query: str, category: str) -> str:
     try:
-        results = tavily.search(query=query, max_results=5, search_depth="basic")
+        results = tavily.search(query=query, max_results=8, search_depth="basic")
         items = results.get("results", [])
         if not items:
             return "No results found for this search."
         lines = []
+        seen_domains = set()
         for r in items:
             title = r.get("title", "").strip()
             url = r.get("url", "").strip()
             snippet = r.get("content", "").strip()[:300]
+
+            if is_aggregator(url):
+                # Try to find the vendor's real site from the listing
+                real_url = find_official_url_from_aggregator(url)
+                if real_url:
+                    url = real_url
+                else:
+                    continue  # Skip if we can't resolve the real site
+
+            from urllib.parse import urlparse
+            domain = urlparse(url).netloc
+            if domain in seen_domains:
+                continue
+            seen_domains.add(domain)
+
             lines.append(f"**{title}**\n{url}\n{snippet}")
+            if len(lines) >= 5:
+                break
+
+        if not lines:
+            return "No results found for this search."
         return "\n\n---\n\n".join(lines)
     except Exception as e:
         return f"Search unavailable: {str(e)}"
