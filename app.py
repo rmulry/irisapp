@@ -489,6 +489,9 @@ def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
         return [e for e in found if e.split("@")[-1].lower() not in JUNK_DOMAINS]
 
     from urllib.parse import urlparse
+    # If the URL is an aggregator, find the real site first
+    if is_aggregator(vendor_url):
+        vendor_url = find_official_url(vendor_name, vendor_url)
     parsed = urlparse(vendor_url)
     base_url = f"{parsed.scheme}://{parsed.netloc}"
 
@@ -630,24 +633,23 @@ def is_aggregator(url: str) -> bool:
     domain = urlparse(url).netloc.lower().lstrip("www.")
     return any(agg in domain for agg in AGGREGATOR_DOMAINS)
 
-def find_official_url_from_aggregator(aggregator_url: str) -> str | None:
-    """Scrape an aggregator listing page and find the vendor's official website link."""
+def find_official_url(vendor_name: str, fallback_url: str = "") -> str:
+    """Find a vendor's official website via targeted Tavily search."""
     try:
-        result = firecrawl.scrape_url(aggregator_url, formats=["markdown"])
-        content = result.get("markdown", "") or ""
-        # Look for "website" or "visit" links in the content
-        import re
-        # Find URLs that aren't the aggregator itself
-        urls = re.findall(r'https?://[^\s\)\]\"]+', content)
-        for u in urls:
-            if not is_aggregator(u) and "javascript" not in u.lower():
+        results = tavily.search(
+            query=f"{vendor_name} official website",
+            max_results=5,
+            search_depth="basic"
+        )
+        for r in results.get("results", []):
+            url = r.get("url", "")
+            if url and not is_aggregator(url):
                 from urllib.parse import urlparse
-                parsed = urlparse(u)
-                if parsed.netloc and parsed.scheme in ("http", "https"):
-                    return f"{parsed.scheme}://{parsed.netloc}"
+                parsed = urlparse(url)
+                return f"{parsed.scheme}://{parsed.netloc}"
     except Exception:
         pass
-    return None
+    return fallback_url
 
 def search_vendors(query: str, category: str) -> str:
     try:
@@ -663,12 +665,11 @@ def search_vendors(query: str, category: str) -> str:
             snippet = r.get("content", "").strip()[:300]
 
             if is_aggregator(url):
-                # Try to find the vendor's real site from the listing
-                real_url = find_official_url_from_aggregator(url)
-                if real_url:
+                real_url = find_official_url(title, url)
+                if not is_aggregator(real_url):
                     url = real_url
                 else:
-                    continue  # Skip if we can't resolve the real site
+                    continue  # Can't resolve — skip
 
             from urllib.parse import urlparse
             domain = urlparse(url).netloc
@@ -1179,10 +1180,13 @@ if prompt := st.chat_input("Tell Iris..."):
     if get_profile_complete(st.session_state.messages):
         if not profile_already_saved(user_id):
             extract_and_save_profile(user_id, st.session_state.messages)
-        if not timeline_already_saved(user_id):
+        if not st.session_state.get("timeline_generated") and not timeline_already_saved(user_id):
+            st.session_state.timeline_generated = True
             with st.spinner("Building your planning timeline..."):
                 st.session_state.timeline = generate_and_save_timeline(
                     user_id, st.session_state.messages
                 )
+        else:
+            st.session_state.timeline_generated = True
 
     st.rerun()
