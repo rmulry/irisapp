@@ -184,6 +184,107 @@ def profile_already_saved(user_id: str) -> bool:
     return len(result.data) > 0
 
 
+def timeline_already_saved(user_id: str) -> bool:
+    result = supabase.table("wedding_profiles") \
+        .select("timeline") \
+        .eq("session_id", user_id) \
+        .execute()
+    return bool(result.data and result.data[0].get("timeline"))
+
+
+def load_timeline(user_id: str) -> dict | None:
+    result = supabase.table("wedding_profiles") \
+        .select("timeline") \
+        .eq("session_id", user_id) \
+        .execute()
+    if result.data and result.data[0].get("timeline"):
+        return result.data[0]["timeline"]
+    return None
+
+
+def generate_and_save_timeline(user_id: str, messages: list):
+    conversation = "\n".join(
+        f"{m['role'].upper()}: {m['content']}" for m in messages
+    )
+    prompt = f"""Based on this wedding planning conversation, generate a complete planning timeline.
+Today's date is {TODAY}.
+
+Conversation:
+{conversation}
+
+Generate a full end-to-end wedding planning timeline. Return ONLY valid JSON:
+{{
+  "wedding_date": "YYYY-MM-DD or null",
+  "months_until_wedding": number or null,
+  "milestones": [
+    {{
+      "category": "Venue",
+      "task": "Book wedding venue",
+      "due_date": "YYYY-MM-DD",
+      "urgency": "urgent|upcoming|future",
+      "note": "brief reason this timing matters",
+      "delegated": false
+    }}
+  ],
+  "pre_wedding_events": [
+    {{
+      "event": "Engagement Party",
+      "optional": true,
+      "suggested_date": "YYYY-MM-DD",
+      "note": "brief note"
+    }}
+  ]
+}}
+
+Urgency rules based on today's date:
+- urgent: due within 60 days
+- upcoming: due within 6 months
+- future: due more than 6 months away
+
+Standard lead times from wedding date:
+- Venue: book 12-18 months before
+- Photographer/videographer: 12 months before
+- Band/DJ: 10-12 months before
+- Caterer (if separate from venue): 9-12 months before
+- Florist: 6-9 months before
+- Hair & makeup: 6-9 months before
+- Officiant: 6-9 months before
+- Cake: 4-6 months before
+- Invitations: design 4-5 months before, send 8-10 weeks before
+- Transportation: 3-6 months before
+- Rehearsal dinner venue: 6 months before
+
+Pre-wedding events to include if relevant (all optional):
+- Engagement party: 1-6 months after engagement
+- Bridal shower: 1-3 months before wedding
+- Bachelorette: 1-3 months before wedding
+- Rehearsal dinner: night before wedding
+
+Mark milestones as delegated:true if the user said they want Iris to handle that category.
+Order milestones by due_date ascending.
+If wedding date is unknown, use placeholder dates relative to "12 months from today"."""
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=2000,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        text = response.content[0].text.strip()
+        if text.startswith("```"):
+            text = text.split("```")[1]
+            if text.startswith("json"):
+                text = text[4:]
+        data = json.loads(text.strip())
+        supabase.table("wedding_profiles").upsert({
+            "session_id": user_id,
+            "timeline": data,
+        }).execute()
+        return data
+    except Exception:
+        return None
+
+
 def extract_and_save_profile(user_id: str, messages: list):
     conversation = "\n".join(
         f"{m['role'].upper()}: {m['content']}" for m in messages
@@ -399,15 +500,52 @@ if "user_delegated" not in st.session_state:
 if "filtered_categories" not in st.session_state:
     st.session_state.filtered_categories = None
 
-# ── Sign out ──────────────────────────────────────────────────────────────────
+if "timeline" not in st.session_state:
+    st.session_state.timeline = None
+
+# ── Sign out + Timeline sidebar ───────────────────────────────────────────────
+
+# Load timeline from DB on return visits
+if st.session_state.timeline is None and st.session_state.profile_complete:
+    st.session_state.timeline = load_timeline(user_id)
 
 with st.sidebar:
     st.caption(f"Signed in as {st.session_state.user.email}")
     if st.button("Sign out"):
         supabase.auth.sign_out()
-        for key in ["user", "messages", "profile_complete", "auth_mode"]:
+        for key in ["user", "messages", "profile_complete", "auth_mode", "timeline",
+                    "planning_stage", "user_priorities", "user_delegated",
+                    "filtered_categories", "tot_complete", "tot_selections",
+                    "tot_cat_idx", "tot_pair_idx"]:
             st.session_state.pop(key, None)
         st.rerun()
+
+    timeline = st.session_state.timeline
+    if timeline and timeline.get("milestones"):
+        st.divider()
+        months = timeline.get("months_until_wedding")
+        wedding_date = timeline.get("wedding_date", "")
+        if months:
+            st.markdown(f"**{months} months until your wedding**")
+        if wedding_date:
+            st.caption(wedding_date)
+
+        st.markdown("**Your Planning Timeline**")
+        for m in timeline.get("milestones", []):
+            urgency = m.get("urgency", "future")
+            icon = "🔴" if urgency == "urgent" else "🟡" if urgency == "upcoming" else "🟢"
+            delegated_tag = "  \n*Iris handling*" if m.get("delegated") else ""
+            due = m.get("due_date", "")
+            st.markdown(f"{icon} **{m['task']}**{delegated_tag}  \n*by {due}*")
+
+        pre = timeline.get("pre_wedding_events", [])
+        if pre:
+            st.divider()
+            st.markdown("**Pre-wedding events**")
+            for e in pre:
+                optional = " *(optional)*" if e.get("optional") else ""
+                suggested = e.get("suggested_date", "TBD")
+                st.markdown(f"• {e['event']}{optional}  \n*{suggested}*")
 
 # ── This or That helpers ──────────────────────────────────────────────────────
 
@@ -593,8 +731,14 @@ if prompt := st.chat_input("Tell Iris..."):
     save_message(user_id, "assistant", reply)
     st.session_state.messages.append({"role": "assistant", "content": reply})
 
-    # Extract and save profile if just completed
-    if get_profile_complete(st.session_state.messages) and not profile_already_saved(user_id):
-        extract_and_save_profile(user_id, st.session_state.messages)
+    # Extract profile and generate timeline when onboarding completes
+    if get_profile_complete(st.session_state.messages):
+        if not profile_already_saved(user_id):
+            extract_and_save_profile(user_id, st.session_state.messages)
+        if not timeline_already_saved(user_id):
+            with st.spinner("Building your planning timeline..."):
+                st.session_state.timeline = generate_and_save_timeline(
+                    user_id, st.session_state.messages
+                )
 
     st.rerun()
