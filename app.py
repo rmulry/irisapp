@@ -537,7 +537,9 @@ def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
 
     # If the URL is an aggregator, resolve to real site first
     if is_aggregator(vendor_url):
-        vendor_url = find_official_url(vendor_name, vendor_url)
+        resolved = find_official_url(vendor_name)
+        if resolved:
+            vendor_url = resolved
 
     parsed = urlparse(vendor_url)
     base_url = f"{parsed.scheme}://{parsed.netloc}"
@@ -645,13 +647,13 @@ def is_aggregator(url: str) -> bool:
     domain = urlparse(url).netloc.lower().lstrip("www.")
     return any(agg in domain for agg in AGGREGATOR_DOMAINS)
 
-def find_official_url(vendor_name: str, fallback_url: str = "") -> str:
+def find_official_url(vendor_name: str) -> str | None:
     """Find a vendor's official website via targeted Tavily search."""
     try:
         results = tavily.search(
             query=f"{vendor_name} official website",
             max_results=5,
-            search_depth="basic"
+            search_depth="advanced"
         )
         for r in results.get("results", []):
             url = r.get("url", "")
@@ -661,20 +663,37 @@ def find_official_url(vendor_name: str, fallback_url: str = "") -> str:
                 return f"{parsed.scheme}://{parsed.netloc}"
     except Exception:
         pass
-    return fallback_url
+    return None
 
 def search_vendors(query: str, category: str) -> str:
     try:
-        results = tavily.search(query=query, max_results=5, search_depth="basic")
+        results = tavily.search(query=query, max_results=5, search_depth="advanced")
         items = results.get("results", [])
         if not items:
             return "No results found for this search."
         lines = []
+        seen_domains = set()
         for r in items:
             title = r.get("title", "").strip()
             url = r.get("url", "").strip()
             snippet = r.get("content", "").strip()[:300]
+
+            # Try to resolve aggregator URLs to the vendor's real site
+            if is_aggregator(url):
+                resolved = find_official_url(title)
+                if resolved and not is_aggregator(resolved):
+                    url = resolved
+
+            from urllib.parse import urlparse
+            domain = urlparse(url).netloc
+            if domain in seen_domains:
+                continue
+            seen_domains.add(domain)
+
             lines.append(f"**{title}**\n{url}\n{snippet}")
+
+        if not lines:
+            return "No results found for this search."
         return "\n\n---\n\n".join(lines)
     except Exception as e:
         return f"Search unavailable: {str(e)}"
