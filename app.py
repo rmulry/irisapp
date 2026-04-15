@@ -125,6 +125,14 @@ to avoid formatting issues.
 
 Never mention The Knot, WeddingWire, or Zola.
 
+VENDOR EMAIL DRAFTING:
+After presenting vendor options, always offer to draft the inquiry email.
+Use the draft_vendor_email tool when the user wants to reach out to a specific vendor.
+After drafting, tell them to copy it and send from their own email.
+Then ask: who else on the list do you want to reach out to?
+Track who they've contacted and who they're waiting to hear back from.
+When they get a response, offer to help them evaluate it.
+
 Keep responses concise — 2-4 sentences max unless summarizing the profile or presenting vendors.
 Never ask more than two questions at once.
 Start by warmly welcoming them and asking the first question."""
@@ -147,8 +155,45 @@ TOOLS = [
             },
             "required": ["query", "category"]
         }
+    },
+    {
+        "name": "draft_vendor_email",
+        "description": "Draft a personalized inquiry email to a wedding vendor. Use this when the user wants to reach out to a specific vendor.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "vendor_name": {
+                    "type": "string",
+                    "description": "Name of the vendor or business"
+                },
+                "vendor_category": {
+                    "type": "string",
+                    "description": "Type of vendor, e.g. 'photographer', 'venue', 'florist', 'DJ'"
+                },
+                "vendor_url": {
+                    "type": "string",
+                    "description": "Vendor website URL if available"
+                }
+            },
+            "required": ["vendor_name", "vendor_category"]
+        }
     }
 ]
+
+VENDOR_QUESTIONS = {
+    "photographer": "date availability, packages and pricing, whether a second shooter is included, full gallery delivery timeline, and image rights",
+    "videographer": "date availability, packages, highlight reel length, whether raw footage is included, and delivery timeline",
+    "venue": "availability on the date, rental period length, catering policy (in-house or outside vendors), capacity, parking situation, and getting-ready space",
+    "florist": "availability, whether they can work within the budget, their style specialty, and what's included in a typical quote",
+    "dj": "availability, how long they play, whether they handle MC duties, how they handle song requests, and what equipment they bring",
+    "band": "availability, number of sets and set length, their song list, whether they learn new songs, and space/power requirements",
+    "caterer": "per-head pricing, service style options, how they handle dietary restrictions, whether a tasting is included, and staffing ratios",
+    "hair": "availability, whether they travel to the venue, whether a trial session is included, and how many people they can accommodate in a morning",
+    "makeup": "availability, whether they travel to the venue, trial session policy, and what products they use",
+    "cake": "availability, whether they offer tastings, flavor options, delivery and setup logistics, and pricing structure",
+    "officiant": "availability, whether they customize the ceremony, how many meetings are included, and whether they file the paperwork",
+    "transportation": "vehicle options and capacity, availability, pricing structure, and whether gratuity is included",
+}
 
 
 # ── Supabase helpers ───────────────────────────────────────────────────────────
@@ -342,6 +387,75 @@ Return this exact JSON structure:
         pass  # Silent fail — don't break the chat
 
 
+# ── Profile loader ─────────────────────────────────────────────────────────────
+
+def load_wedding_profile(user_id: str) -> dict:
+    result = supabase.table("wedding_profiles") \
+        .select("wedding_date, city, state, guest_count, total_budget") \
+        .eq("session_id", user_id) \
+        .execute()
+    return result.data[0] if result.data else {}
+
+
+# ── Vendor email draft ─────────────────────────────────────────────────────────
+
+BUDGET_PCTS = {
+    "photographer": 0.11, "videographer": 0.07, "venue": 0.45,
+    "florist": 0.09, "dj": 0.045, "band": 0.10, "caterer": 0.45,
+    "hair": 0.025, "makeup": 0.025, "cake": 0.015,
+    "officiant": 0.01, "transportation": 0.02,
+}
+
+def draft_vendor_email(vendor_name: str, vendor_category: str, vendor_url: str, user_id: str) -> str:
+    profile = load_wedding_profile(user_id)
+    wedding_date = profile.get("wedding_date", "")
+    city = profile.get("city", "")
+    state = profile.get("state", "")
+    guest_count = profile.get("guest_count", "")
+    total_budget = profile.get("total_budget") or 0
+
+    pct = BUDGET_PCTS.get(vendor_category.lower(), 0.10)
+    vendor_budget = int(total_budget * pct) if total_budget else None
+    budget_line = f"approx. {vendor_budget} dollars" if vendor_budget else "within our overall budget"
+
+    questions = VENDOR_QUESTIONS.get(vendor_category.lower(),
+        "availability, pricing, and what's included in your packages")
+
+    prompt = f"""Draft a warm, professional wedding vendor inquiry email.
+
+Vendor: {vendor_name}
+Vendor type: {vendor_category}
+Wedding date: {wedding_date}
+Location: {city}, {state}
+Guest count: {guest_count}
+Budget for this vendor: {budget_line}
+
+Write a genuine, specific inquiry. Include:
+- Warm intro with wedding date and location
+- Honest mention of budget range
+- Specific questions about: {questions}
+- Request for availability confirmation
+- Professional closing
+
+Keep it under 180 words. Warm but not overly casual. No filler phrases like "I hope this email finds you well."
+
+Format exactly as:
+Subject: [subject line]
+
+[email body]"""
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=600,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        email_text = response.content[0].text.strip()
+        return f"IRIS_EMAIL_DRAFT_START\n{email_text}\nIRIS_EMAIL_DRAFT_END"
+    except Exception as e:
+        return f"Could not draft email: {str(e)}"
+
+
 # ── Vendor search ──────────────────────────────────────────────────────────────
 
 def search_vendors(query: str, category: str) -> str:
@@ -363,7 +477,7 @@ def search_vendors(query: str, category: str) -> str:
 
 # ── Agentic chat loop ──────────────────────────────────────────────────────────
 
-def chat(messages: list) -> str:
+def chat(messages: list, current_user_id: str = "") -> str:
     # Work on a local copy so tool-use intermediate steps don't pollute stored messages
     api_messages = list(messages)
 
@@ -384,6 +498,18 @@ def chat(messages: list) -> str:
                         result_text = search_vendors(
                             block.input["query"],
                             block.input["category"]
+                        )
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result_text,
+                        })
+                    elif block.name == "draft_vendor_email":
+                        result_text = draft_vendor_email(
+                            block.input["vendor_name"],
+                            block.input["vendor_category"],
+                            block.input.get("vendor_url", ""),
+                            current_user_id,
                         )
                         tool_results.append({
                             "type": "tool_result",
@@ -701,17 +827,34 @@ if not st.session_state.messages and st.session_state.planning_stage:
         parts.append("Aesthetic preferences from style quiz: " + ", ".join(prefs) + ".")
     seed = " ".join(parts)
     with st.spinner(""):
-        opening = chat([{"role": "user", "content": seed}])
+        opening = chat([{"role": "user", "content": seed}], user_id)
     save_message(user_id, "assistant", opening)
     st.session_state.messages.append({"role": "assistant", "content": opening})
 
 # ── Render chat history ───────────────────────────────────────────────────────
 
+def render_message(content: str):
+    """Render a message, detecting and styling email drafts specially."""
+    if "IRIS_EMAIL_DRAFT_START" in content:
+        parts = content.split("IRIS_EMAIL_DRAFT_START")
+        before = parts[0].replace("$", r"\$")
+        rest = parts[1].split("IRIS_EMAIL_DRAFT_END")
+        draft = rest[0].strip()
+        after = rest[1].replace("$", r"\$") if len(rest) > 1 else ""
+        if before.strip():
+            st.markdown(before)
+        st.markdown("**📧 Draft email — copy and send from your own inbox:**")
+        st.code(draft, language=None)
+        if after.strip():
+            st.markdown(after)
+    else:
+        st.markdown(content.replace("$", r"\$"))
+
+
 for msg in st.session_state.messages:
     with st.chat_message("assistant" if msg["role"] == "assistant" else "user",
                          avatar="🌸" if msg["role"] == "assistant" else "👤"):
-        content = msg["content"].replace("$", r"\$")
-        st.markdown(content)
+        render_message(msg["content"])
 
 # ── Profile complete state ────────────────────────────────────────────────────
 
@@ -731,8 +874,8 @@ if prompt := st.chat_input("Tell Iris..."):
 
     with st.chat_message("assistant", avatar="🌸"):
         with st.spinner(""):
-            reply = chat(st.session_state.messages)
-        st.markdown(reply.replace("$", r"\$"))
+            reply = chat(st.session_state.messages, user_id)
+        render_message(reply)
 
     save_message(user_id, "assistant", reply)
     st.session_state.messages.append({"role": "assistant", "content": reply})
