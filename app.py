@@ -115,6 +115,11 @@ Always factor the total budget into every recommendation. Know these standard al
 
 Apply these to their actual budget number every time. A 60K budget means ~6-7K for photography.
 A 150K budget means ~15-18K for photography. Always be specific to their number.
+CRITICAL: Never use generic ranges like "photographers typically cost 2,000-8,000 dollars."
+Always calculate from their exact budget. If their budget is 45,000 dollars, say
+"your photography budget is approx. 4,500-5,400 dollars" — never a generic range.
+Same for wedding date — always reference their specific date and calculate exactly how many
+months away it is. Never say "depending on your timeline."
 Never use dollar signs ($) in your responses — write out "dollars" or use "approx. 6,000 dollars"
 to avoid formatting issues.
 
@@ -418,19 +423,56 @@ st.markdown("""
 st.title("🌸 Iris")
 st.markdown('<p class="iris-tagline">Make confident decisions faster.</p>', unsafe_allow_html=True)
 
-# ── Auth state ────────────────────────────────────────────────────────────────
+# ── Pre-auth session state ────────────────────────────────────────────────────
 
 if "user" not in st.session_state:
     st.session_state.user = None
 
 if "auth_mode" not in st.session_state:
-    st.session_state.auth_mode = "login"
+    st.session_state.auth_mode = "signup"
 
-# ── Auth screen ───────────────────────────────────────────────────────────────
+if "planning_stage" not in st.session_state:
+    st.session_state.planning_stage = None
+
+# ── Step 1: Planning stage (before auth — first thing they see) ───────────────
+
+if st.session_state.planning_stage is None:
+    st.markdown("### Where are you in the planning process?")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        if st.button("💍 Just got engaged\nStarting from scratch", use_container_width=True):
+            st.session_state.planning_stage = "Just got engaged — starting from scratch."
+            st.rerun()
+    with col2:
+        if st.button("📋 A few months in\nHave some things figured out", use_container_width=True):
+            st.session_state.planning_stage = "A few months in — have some things already figured out or booked."
+            st.rerun()
+    with col3:
+        if st.button("😅 Further along\nOverwhelmed, need help", use_container_width=True):
+            st.session_state.planning_stage = "Further along in planning — feeling overwhelmed and need help getting organized."
+            st.rerun()
+    st.stop()
+
+# ── Auth screen (after planning stage — they've had one interaction first) ────
 
 if st.session_state.user is None:
-    if st.session_state.auth_mode == "login":
-        st.subheader("Welcome back")
+    st.markdown("**Create a free account to save your progress.**")
+    if st.session_state.auth_mode == "signup":
+        email = st.text_input("Email", key="signup_email")
+        password = st.text_input("Password (min 6 characters)", type="password", key="signup_password")
+
+        if st.button("Get started", use_container_width=True, type="primary"):
+            try:
+                result = supabase.auth.sign_up({"email": email, "password": password})
+                st.session_state.user = result.user
+                st.rerun()
+            except Exception:
+                st.error("Something went wrong. Try again.")
+
+        if st.button("Already have an account? Sign in", use_container_width=True):
+            st.session_state.auth_mode = "login"
+            st.rerun()
+    else:
         email = st.text_input("Email", key="login_email")
         password = st.text_input("Password", type="password", key="login_password")
 
@@ -446,23 +488,6 @@ if st.session_state.user is None:
             st.session_state.auth_mode = "signup"
             st.rerun()
 
-    else:
-        st.subheader("Create your account")
-        email = st.text_input("Email", key="signup_email")
-        password = st.text_input("Password (min 6 characters)", type="password", key="signup_password")
-
-        if st.button("Get started", use_container_width=True, type="primary"):
-            try:
-                result = supabase.auth.sign_up({"email": email, "password": password})
-                st.session_state.user = result.user
-                st.rerun()
-            except Exception:
-                st.error("Something went wrong. Try again.")
-
-        if st.button("Already have an account? Sign in", use_container_width=True):
-            st.session_state.auth_mode = "login"
-            st.rerun()
-
     st.stop()
 
 # ── Logged in — load session ──────────────────────────────────────────────────
@@ -475,9 +500,6 @@ if "messages" not in st.session_state:
 
 if "profile_complete" not in st.session_state:
     st.session_state.profile_complete = False
-
-if "planning_stage" not in st.session_state:
-    st.session_state.planning_stage = None
 
 if "tot_complete" not in st.session_state:
     st.session_state.tot_complete = False
@@ -572,25 +594,6 @@ def extract_and_save_aesthetic(user_id: str, selections: list):
         return {}
 
 
-# ── Step 1: Planning stage ────────────────────────────────────────────────────
-
-if not st.session_state.messages and st.session_state.planning_stage is None:
-    st.markdown("### Where are you in the planning process?")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.button("💍 Just got engaged\nStarting from scratch", use_container_width=True):
-            st.session_state.planning_stage = "Just got engaged — starting from scratch."
-            st.rerun()
-    with col2:
-        if st.button("📋 A few months in\nHave some things figured out", use_container_width=True):
-            st.session_state.planning_stage = "A few months in — have some things already figured out or booked."
-            st.rerun()
-    with col3:
-        if st.button("😅 Further along\nOverwhelmed, need help", use_container_width=True):
-            st.session_state.planning_stage = "Further along in planning — feeling overwhelmed and need help getting organized."
-            st.rerun()
-    st.stop()
-
 # ── Step 2: Priorities & delegation ──────────────────────────────────────────
 
 if not st.session_state.messages and st.session_state.user_priorities is None:
@@ -639,6 +642,9 @@ if st.session_state.planning_stage and not st.session_state.tot_complete:
     st.markdown(f"### {cat['label']}")
     st.caption(cat["instruction"])
     st.progress(done_pairs / total_pairs)
+    if st.button("Skip style quiz →", key="skip_tot"):
+        st.session_state.tot_complete = True
+        st.rerun()
 
     key_a = f"{cat['name']}_{st.session_state.tot_pair_idx}_a"
     key_b = f"{cat['name']}_{st.session_state.tot_pair_idx}_b"
