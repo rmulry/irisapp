@@ -10,6 +10,7 @@ import streamlit as st
 from anthropic import Anthropic
 from supabase import create_client
 from tavily import TavilyClient
+from firecrawl import FirecrawlApp
 from dotenv import load_dotenv
 from this_or_that import CATEGORIES, VENDOR_CATEGORIES, get_filtered_categories, preload_images, build_extraction_prompt
 
@@ -18,6 +19,7 @@ load_dotenv(dotenv_path=os.path.join(os.path.dirname(__file__), ".env"))
 client = Anthropic()
 supabase = create_client(os.environ["SUPABASE_URL"], os.environ["SUPABASE_ANON_KEY"])
 tavily = TavilyClient(api_key=os.environ["TAVILY_API_KEY"])
+firecrawl = FirecrawlApp(api_key=os.environ["FIRECRAWL_API_KEY"])
 
 TODAY = date.today().strftime("%B %d, %Y")
 
@@ -412,10 +414,16 @@ def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
     base_url = f"{parsed.scheme}://{parsed.netloc}"
 
     # Step 1: Fetch homepage
+    def scrape(url: str) -> str:
+        try:
+            result = firecrawl.scrape_url(url, formats=["markdown"])
+            return result.get("markdown", "") or ""
+        except Exception:
+            return ""
+
     content = ""
     try:
-        result = tavily.extract(urls=[base_url])
-        content = result.get("results", [{}])[0].get("raw_content", "")
+        content = scrape(base_url)
         emails = clean_emails(content)
         if emails:
             return emails[0], None
@@ -424,31 +432,23 @@ def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
 
     # Step 2: Fetch /contact page
     contact_url = base_url + "/contact"
-    try:
-        result = tavily.extract(urls=[contact_url])
-        contact_content = result.get("results", [{}])[0].get("raw_content", "")
+    contact_content = scrape(contact_url)
+    if contact_content:
         emails = clean_emails(contact_content)
         if emails:
             return emails[0], None
-        # Contact page exists but no email — return the URL
-        if contact_content:
-            return None, contact_url
-    except Exception:
-        pass
+        # Contact page exists but no email — return the URL as a form
+        return None, contact_url
 
     # Step 3: Try /contact-us
-    try:
-        result = tavily.extract(urls=[base_url + "/contact-us"])
-        content2 = result.get("results", [{}])[0].get("raw_content", "")
+    content2 = scrape(base_url + "/contact-us")
+    if content2:
         emails = clean_emails(content2)
         if emails:
             return emails[0], None
-        if content2:
-            return None, base_url + "/contact-us"
-    except Exception:
-        pass
+        return None, base_url + "/contact-us"
 
-    # Step 4: If homepage had contact form link, return that
+    # Step 4: If homepage mentioned contact, return /contact as best guess
     if "contact" in content.lower():
         return None, contact_url
 
@@ -464,20 +464,14 @@ def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
                 found_url = r.get("url", "")
                 found_parsed = urlparse(found_url)
                 found_base = f"{found_parsed.scheme}://{found_parsed.netloc}"
-                # Skip aggregator sites
                 if any(x in found_base for x in ["theknot", "weddingwire", "yelp", "zola", "weddingly"]):
                     continue
-                # Try /contact on this site
-                try:
-                    r2 = tavily.extract(urls=[found_base + "/contact"])
-                    c2 = r2.get("results", [{}])[0].get("raw_content", "")
+                c2 = scrape(found_base + "/contact")
+                if c2:
                     emails = clean_emails(c2)
                     if emails:
                         return emails[0], None
-                    if c2:
-                        return None, found_base + "/contact"
-                except Exception:
-                    pass
+                    return None, found_base + "/contact"
                 if found_base != base_url:
                     break
         except Exception:

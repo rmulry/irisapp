@@ -1,4 +1,5 @@
 anthropic==0.93.0
+firecrawl-py==4.22.2
 python-dotenv==1.2.2
 requests==2.33.1
 streamlit==1.56.0
