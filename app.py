@@ -406,6 +406,66 @@ BUDGET_PCTS = {
     "officiant": 0.01, "transportation": 0.02,
 }
 
+import re as _re
+EMAIL_PATTERN = _re.compile(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}")
+JUNK_DOMAINS = {"example.com", "sentry.io", "wixpress.com", "squarespace.com",
+                "wordpress.com", "googleapis.com", "schema.org"}
+
+
+def find_vendor_contact(vendor_url: str) -> tuple:
+    """Returns (email_or_None, contact_url_or_None) by fetching the vendor site."""
+    if not vendor_url:
+        return None, None
+
+    def clean_emails(text: str) -> list:
+        found = EMAIL_PATTERN.findall(text)
+        return [e for e in found if e.split("@")[-1].lower() not in JUNK_DOMAINS]
+
+    base_url = vendor_url.rstrip("/")
+
+    # Step 1: Fetch homepage
+    try:
+        result = tavily.extract(urls=[vendor_url])
+        content = result.get("results", [{}])[0].get("raw_content", "")
+        emails = clean_emails(content)
+        if emails:
+            return emails[0], None
+    except Exception:
+        content = ""
+
+    # Step 2: Fetch /contact page
+    contact_url = base_url + "/contact"
+    try:
+        result = tavily.extract(urls=[contact_url])
+        contact_content = result.get("results", [{}])[0].get("raw_content", "")
+        emails = clean_emails(contact_content)
+        if emails:
+            return emails[0], None
+        # Contact page exists but no email — return the URL
+        if contact_content:
+            return None, contact_url
+    except Exception:
+        pass
+
+    # Step 3: Try /contact-us
+    try:
+        result = tavily.extract(urls=[base_url + "/contact-us"])
+        content2 = result.get("results", [{}])[0].get("raw_content", "")
+        emails = clean_emails(content2)
+        if emails:
+            return emails[0], None
+        if content2:
+            return None, base_url + "/contact-us"
+    except Exception:
+        pass
+
+    # Step 4: If homepage had contact form link, return that
+    if "contact" in content.lower():
+        return None, contact_url
+
+    return None, None
+
+
 def draft_vendor_email(vendor_name: str, vendor_category: str, vendor_url: str, user_id: str) -> str:
     profile = load_wedding_profile(user_id)
     wedding_date = profile.get("wedding_date", "")
@@ -420,6 +480,15 @@ def draft_vendor_email(vendor_name: str, vendor_category: str, vendor_url: str, 
 
     questions = VENDOR_QUESTIONS.get(vendor_category.lower(),
         "availability, pricing, and what's included in your packages")
+
+    # Find contact info by crawling the vendor's site
+    contact_email, contact_form_url = find_vendor_contact(vendor_url)
+    if contact_email:
+        contact_line = f"\n\nSend to: {contact_email}"
+    elif contact_form_url:
+        contact_line = f"\n\nNo email found — use their contact form: {contact_form_url}"
+    else:
+        contact_line = "\n\nNo contact email found. Check their website directly."
 
     prompt = f"""Draft a short, casual wedding vendor inquiry email that sounds like a real person wrote it.
 
@@ -446,20 +515,6 @@ Subject: [subject line]
 
 [email body]"""
 
-    # Try to find contact email via Tavily
-    contact_info = ""
-    try:
-        search_q = f"{vendor_name} {city} {vendor_category} contact email"
-        results = tavily.search(query=search_q, max_results=2, search_depth="basic")
-        snippets = " ".join(r.get("content", "") for r in results.get("results", []))
-        # Look for email pattern in results
-        import re
-        emails = re.findall(r"[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}", snippets)
-        if emails:
-            contact_info = f"\n\nContact email found: {emails[0]}"
-    except Exception:
-        pass
-
     try:
         response = client.messages.create(
             model="claude-sonnet-4-6",
@@ -467,7 +522,7 @@ Subject: [subject line]
             messages=[{"role": "user", "content": prompt}],
         )
         email_text = response.content[0].text.strip()
-        return f"IRIS_EMAIL_DRAFT_START\n{email_text}{contact_info}\nIRIS_EMAIL_DRAFT_END"
+        return f"IRIS_EMAIL_DRAFT_START\n{email_text}{contact_line}\nIRIS_EMAIL_DRAFT_END"
     except Exception as e:
         return f"Could not draft email: {str(e)}"
 
