@@ -495,13 +495,7 @@ def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
         return [e for e in found if e.split("@")[-1].lower() not in JUNK_DOMAINS]
 
     from urllib.parse import urlparse
-    # If the URL is an aggregator, find the real site first
-    if is_aggregator(vendor_url):
-        vendor_url = find_official_url(vendor_name, vendor_url)
-    parsed = urlparse(vendor_url)
-    base_url = f"{parsed.scheme}://{parsed.netloc}"
 
-    # Step 1: Fetch homepage
     def scrape(url: str) -> str:
         try:
             result = firecrawl.scrape_url(url, formats=["markdown"])
@@ -509,63 +503,72 @@ def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
         except Exception:
             return ""
 
-    content = ""
-    try:
-        content = scrape(base_url)
+    def try_site(base: str) -> tuple:
+        """Try homepage, /contact, /contact-us on a given base URL."""
+        # Homepage
+        content = scrape(base)
         emails = clean_emails(content)
         if emails:
             return emails[0], None
+
+        # /contact
+        contact = base + "/contact"
+        c = scrape(contact)
+        if c:
+            emails = clean_emails(c)
+            if emails:
+                return emails[0], None
+            return None, contact
+
+        # /contact-us
+        cu = base + "/contact-us"
+        c2 = scrape(cu)
+        if c2:
+            emails = clean_emails(c2)
+            if emails:
+                return emails[0], None
+            return None, cu
+
+        # Homepage mentioned contact
+        if "contact" in content.lower():
+            return None, contact
+
+        return None, None
+
+    # If the URL is an aggregator, resolve to real site first
+    if is_aggregator(vendor_url):
+        vendor_url = find_official_url(vendor_name, vendor_url)
+
+    parsed = urlparse(vendor_url)
+    base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+    email, form_url = try_site(base_url)
+    if email or form_url:
+        return email, form_url
+
+    # Fallback: search specifically for the vendor contact page
+    try:
+        search_result = tavily.search(
+            query=f"{vendor_name} contact email wedding",
+            max_results=5,
+            search_depth="basic"
+        )
+        for r in search_result.get("results", []):
+            found_url = r.get("url", "")
+            if is_aggregator(found_url):
+                continue
+            found_parsed = urlparse(found_url)
+            found_base = f"{found_parsed.scheme}://{found_parsed.netloc}"
+            if found_base == base_url:
+                continue
+            email, form_url = try_site(found_base)
+            if email or form_url:
+                return email, form_url
     except Exception:
-        content = ""
+        pass
 
-    # Step 2: Fetch /contact page
-    contact_url = base_url + "/contact"
-    contact_content = scrape(contact_url)
-    if contact_content:
-        emails = clean_emails(contact_content)
-        if emails:
-            return emails[0], None
-        # Contact page exists but no email — return the URL as a form
-        return None, contact_url
-
-    # Step 3: Try /contact-us
-    content2 = scrape(base_url + "/contact-us")
-    if content2:
-        emails = clean_emails(content2)
-        if emails:
-            return emails[0], None
-        return None, base_url + "/contact-us"
-
-    # Step 4: If homepage mentioned contact, return /contact as best guess
-    if "contact" in content.lower():
-        return None, contact_url
-
-    # Step 5: Search for the vendor's official website and try again
-    if vendor_name:
-        try:
-            search_result = tavily.search(
-                query=f"{vendor_name} official website contact",
-                max_results=3,
-                search_depth="basic"
-            )
-            for r in search_result.get("results", []):
-                found_url = r.get("url", "")
-                found_parsed = urlparse(found_url)
-                found_base = f"{found_parsed.scheme}://{found_parsed.netloc}"
-                if any(x in found_base for x in ["theknot", "weddingwire", "yelp", "zola", "weddingly"]):
-                    continue
-                c2 = scrape(found_base + "/contact")
-                if c2:
-                    emails = clean_emails(c2)
-                    if emails:
-                        return emails[0], None
-                    return None, found_base + "/contact"
-                if found_base != base_url:
-                    break
-        except Exception:
-            pass
-
-    return None, None
+    # Last resort: return the /contact page URL so user has somewhere to go
+    return None, base_url + "/contact"
 
 
 def draft_vendor_email(vendor_name: str, vendor_category: str, vendor_url: str, user_id: str) -> str:
@@ -662,36 +665,16 @@ def find_official_url(vendor_name: str, fallback_url: str = "") -> str:
 
 def search_vendors(query: str, category: str) -> str:
     try:
-        results = tavily.search(query=query, max_results=8, search_depth="basic")
+        results = tavily.search(query=query, max_results=5, search_depth="basic")
         items = results.get("results", [])
         if not items:
             return "No results found for this search."
         lines = []
-        seen_domains = set()
         for r in items:
             title = r.get("title", "").strip()
             url = r.get("url", "").strip()
             snippet = r.get("content", "").strip()[:300]
-
-            if is_aggregator(url):
-                real_url = find_official_url(title, url)
-                if not is_aggregator(real_url):
-                    url = real_url
-                else:
-                    continue  # Can't resolve — skip
-
-            from urllib.parse import urlparse
-            domain = urlparse(url).netloc
-            if domain in seen_domains:
-                continue
-            seen_domains.add(domain)
-
             lines.append(f"**{title}**\n{url}\n{snippet}")
-            if len(lines) >= 5:
-                break
-
-        if not lines:
-            return "No results found for this search."
         return "\n\n---\n\n".join(lines)
     except Exception as e:
         return f"Search unavailable: {str(e)}"
