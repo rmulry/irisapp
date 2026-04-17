@@ -465,6 +465,7 @@ Return this exact JSON structure:
   "priorities": ["list of top priorities"],
   "dont_cares": ["list of delegated categories"],
   "user_name": "first name of the person planning (not their partner) or null",
+  "partner_name": "first name of their partner or null",
   "user_phone": "their phone number or null"
 }}"""
 
@@ -493,6 +494,7 @@ Return this exact JSON structure:
             "priorities": data.get("priorities", []),
             "dont_cares": data.get("dont_cares", []),
             "user_name": data.get("user_name"),
+            "partner_name": data.get("partner_name"),
             "user_phone": data.get("user_phone"),
             "profile_complete": True,
         }).execute()
@@ -504,7 +506,7 @@ Return this exact JSON structure:
 
 def load_wedding_profile(user_id: str) -> dict:
     result = supabase.table("wedding_profiles") \
-        .select("wedding_date, city, state, guest_count, total_budget, user_name, user_phone, priorities, aesthetic_profile") \
+        .select("wedding_date, city, state, guest_count, total_budget, user_name, partner_name, user_phone, priorities, aesthetic_profile") \
         .eq("session_id", user_id) \
         .execute()
     return result.data[0] if result.data else {}
@@ -616,13 +618,15 @@ def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
 def draft_no_thank_you_email(vendor_name: str, vendor_category: str, user_id: str) -> str:
     profile = load_wedding_profile(user_id)
     user_name = profile.get("user_name") or "your name"
+    partner_name = profile.get("partner_name") or ""
+    sign_off = f"{user_name} & {partner_name}" if partner_name else user_name
     user_phone = profile.get("user_phone") or ""
 
     prompt = f"""Draft a short, warm "no thank you" email to a wedding vendor we've decided not to book.
 
 Vendor: {vendor_name}
 Vendor type: {vendor_category}
-Sender name: {user_name}
+Sender name: {sign_off}
 
 Rules:
 - Warm and appreciative but brief — under 75 words
@@ -658,6 +662,8 @@ def draft_vendor_email(vendor_name: str, vendor_category: str, vendor_url: str, 
     wedding_date = profile.get("wedding_date", "")
     guest_count = profile.get("guest_count", "")
     user_name = profile.get("user_name") or "your name"
+    partner_name = profile.get("partner_name") or ""
+    sign_off = f"{user_name} & {partner_name}" if partner_name else user_name
     user_phone = profile.get("user_phone") or ""
 
     # Find contact info by crawling the vendor's site
@@ -677,7 +683,7 @@ Vendor: {vendor_name}
 Vendor type: {vendor_category}
 Wedding date: {wedding_date}
 Guest count: {guest_count}
-Sender name: {user_name}
+Sender name: {sign_off}
 Sender phone: {user_phone if user_phone else "not provided"}
 
 Rules:
