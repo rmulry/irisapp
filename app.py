@@ -190,6 +190,24 @@ TOOLS = [
         }
     },
     {
+        "name": "draft_no_thank_you_email",
+        "description": "Draft a polite no thank you email to a vendor the user has decided not to book. Use this when the user books one vendor and wants to let others in the same category know.",
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "vendor_name": {
+                    "type": "string",
+                    "description": "Name of the vendor to decline"
+                },
+                "vendor_category": {
+                    "type": "string",
+                    "description": "Type of vendor, e.g. 'photographer', 'venue'"
+                }
+            },
+            "required": ["vendor_name", "vendor_category"]
+        }
+    },
+    {
         "name": "update_vendor_status",
         "description": "Update the status of a vendor the user has been tracking. Use this when the user reports back on a vendor response, books someone, or decides to pass.",
         "input_schema": {
@@ -575,6 +593,46 @@ def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
     return None, base_url + "/contact"
 
 
+def draft_no_thank_you_email(vendor_name: str, vendor_category: str, user_id: str) -> str:
+    profile = load_wedding_profile(user_id)
+    user_name = profile.get("user_name") or "your name"
+    user_phone = profile.get("user_phone") or ""
+
+    prompt = f"""Draft a short, warm "no thank you" email to a wedding vendor we've decided not to book.
+
+Vendor: {vendor_name}
+Vendor type: {vendor_category}
+Sender name: {user_name}
+
+Rules:
+- Warm and appreciative but brief — under 75 words
+- Don't over-explain or apologize excessively
+- Don't mention who we booked instead
+- Sound like a real person, not a form letter
+- No words like: genuinely, truly, delighted, pleased
+- Sign off with the sender's real name
+
+Format exactly as:
+Subject: [subject line]
+
+[email body]"""
+
+    try:
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=300,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        email_text = response.content[0].text.strip()
+        try:
+            update_vendor(user_id, vendor_name, "passed")
+        except Exception:
+            pass
+        return f"IRIS_EMAIL_DRAFT_START\n{email_text}\nIRIS_EMAIL_DRAFT_END"
+    except Exception as e:
+        return f"Could not draft email: {str(e)}"
+
+
 def draft_vendor_email(vendor_name: str, vendor_category: str, vendor_url: str, user_id: str) -> str:
     profile = load_wedding_profile(user_id)
     wedding_date = profile.get("wedding_date", "")
@@ -735,6 +793,17 @@ def chat(messages: list, current_user_id: str = "") -> str:
                             block.input["vendor_name"],
                             block.input["vendor_category"],
                             block.input.get("vendor_url", ""),
+                            current_user_id,
+                        )
+                        tool_results.append({
+                            "type": "tool_result",
+                            "tool_use_id": block.id,
+                            "content": result_text,
+                        })
+                    elif block.name == "draft_no_thank_you_email":
+                        result_text = draft_no_thank_you_email(
+                            block.input["vendor_name"],
+                            block.input["vendor_category"],
                             current_user_id,
                         )
                         tool_results.append({
