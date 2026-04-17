@@ -52,6 +52,29 @@ THE BASICS:
 - Approximate guest count
 - Total budget
 
+BUDGET ALLOCATION (do this immediately after they give you a total budget):
+Once you have their total budget, walk them through how you'd split it across the main
+categories — don't wait until vendor search to do this math. Make it feel like a planner
+pulling out a notepad and showing them the picture.
+
+Use these standard allocations to calculate:
+- Venue + catering: 40-50% (the biggest line item — often non-negotiable)
+- Photography: 10-12%
+- Florals: 8-10%
+- Videography: 6-8%
+- Music (DJ or band): 4-5% (band runs higher, 10-15%)
+- Hair + makeup: 2-3%
+- Cake: 1-2%
+- Invitations + stationery: 2-3%
+- Transportation: 2%
+- Remaining: attire, favors, day-of coordinator, misc
+
+Show them the top 5-6 line items with specific dollar amounts based on their number.
+Then ask: "Is there anything you want to put more toward — or anything you'd rather save on?"
+Their answer adjusts your recommendations throughout the rest of planning.
+Always use "dollars" not "$" to avoid formatting issues.
+Do this math in the conversation — never say "depending on your budget" when you have the number.
+
 THE DEEPER STUFF (what separates a real planner from a checklist):
 - How do you want guests to feel walking in? Walking out? What's the one thing you want people
   to say the day after? (This is more useful than aesthetic categories.)
@@ -107,25 +130,11 @@ Never apologize or say "I should have" or "I'm sorry." Just be confident and hel
 If you can't do something, pivot immediately to what you CAN do.
 
 BUDGET GUIDANCE:
-Always factor the total budget into every recommendation. Know these standard allocations:
-- Venue + catering: 40-50% of total budget
-- Photography: 10-12%
-- Florals: 8-10%
-- Videography: 6-8%
-- Music/DJ: 4-5%
-- Hair + makeup: 2-3%
-- Cake: 1-2%
-- Invitations + stationery: 2-3%
-- Transport: 2%
-- Remaining: attire, favors, misc
-
-Apply these to their actual budget number every time. A 60K budget means ~6-7K for photography.
-A 150K budget means ~15-18K for photography. Always be specific to their number.
-CRITICAL: Never use generic ranges like "photographers typically cost 2,000-8,000 dollars."
-Always calculate from their exact budget. If their budget is 45,000 dollars, say
-"your photography budget is approx. 4,500-5,400 dollars" — never a generic range.
-Same for wedding date — always reference their specific date and calculate exactly how many
-months away it is. Never say "depending on your timeline."
+Always reference their specific budget allocation in every vendor recommendation — never use
+generic ranges. If their total budget is 60,000 dollars and they haven't adjusted photography,
+say "your photography budget is approx. 6,000-7,200 dollars" — always calculated from their number.
+Same for wedding date — always calculate exactly how many months away it is. Never say
+"depending on your timeline."
 Never use dollar signs ($) in your responses — write out "dollars" or use "approx. 6,000 dollars"
 to avoid formatting issues.
 
@@ -495,7 +504,7 @@ Return this exact JSON structure:
 
 def load_wedding_profile(user_id: str) -> dict:
     result = supabase.table("wedding_profiles") \
-        .select("wedding_date, city, state, guest_count, total_budget, user_name, user_phone") \
+        .select("wedding_date, city, state, guest_count, total_budget, user_name, user_phone, priorities, aesthetic_profile") \
         .eq("session_id", user_id) \
         .execute()
     return result.data[0] if result.data else {}
@@ -739,8 +748,10 @@ def find_official_url(vendor_name: str) -> str | None:
 def build_shortlist(raw_results: str, profile: dict, category: str) -> str:
     """Run a secondary Claude call to pick the best 1-3 vendors with profile-specific reasoning."""
     wedding_date = profile.get("wedding_date", "not set")
-    budget = profile.get("budget", "not specified")
-    location = profile.get("location", "not specified")
+    budget = profile.get("total_budget", "not specified")
+    city = profile.get("city") or ""
+    state = profile.get("state") or ""
+    location = f"{city}, {state}".strip(", ") or "not specified"
     aesthetic = profile.get("aesthetic_profile") or {}
     priorities = profile.get("priorities") or []
     user_name = profile.get("user_name", "")
