@@ -97,17 +97,31 @@ In order of likelihood:
 
 ---
 
+## The Real Vendor Journey
+
+Vendor booking is not linear. The actual lifecycle is:
+
+**Contacted → Responded → Tour/Meeting Scheduled → Toured → Second Look → Negotiating → Booked**
+
+A single category (especially venue) can take weeks or months with multiple back-and-forths. Iris needs to support this — not assume one email leads to a booking. The tracker needs to hold the full story of each vendor relationship, including notes from tours, what was quoted, what the sticking points are, and where things stand at any given moment.
+
+---
+
 ## What This Means for What to Build
 
 | Job | Current State | Gap |
 |-----|--------------|-----|
 | Where to start | Timeline generator ✓ | Needs to be more directive — "do this first" not just a list |
 | Find trusted vendors | Search exists ✓ | Missing shortlist/recommendation layer (V2) |
-| Communication | First-touch email ✓, vendor tracker ✓ | Missing follow-up drafts, "no thank you" emails |
+| Communication | First-touch email ✓, no thank you email ✓, vendor tracker ✓ | Missing follow-up drafts, richer status model (toured, negotiating) |
 | Make decisions | This or That exists ✓ | Aesthetic data too thin to drive real recommendations yet |
-| Feel less alone | Conversational tone ✓ | Missing proactive touchpoints — nothing pulls user back |
+| Feel less alone | Conversational tone ✓, proactive follow-up nudge ✓ | Missing vendor status dashboard — user shouldn't have to ask Iris what's happening |
 
-**The biggest gap right now:** Nothing brings the user back. Iris is reactive. She answers when asked. The next major unlock is a proactive layer — timeline reminders, follow-up nudges, "you haven't heard back from X in a week, want me to follow up?" That's what turns a tool into a planner.
+**Vendor status dashboard (priority for V1):** The user should be able to see at a glance — without asking Iris — where every vendor stands across every category. Contacted, toured, negotiating, booked, passed. This is the command center. Right now it lives as a small sidebar panel; it needs to be a first-class view the user can open anytime.
+
+**The biggest gap right now:** The tracker status model is too simple. "Contacted" and "booked" don't capture the real journey. Toured, second look, and negotiating are real states that matter for knowing what to do next.
+
+**The biggest gap after that:** Nothing brings the user back. Iris is reactive. She answers when asked. The next major unlock is a proactive layer — timeline reminders, follow-up nudges, "you toured Gotham Hall last week, how did it go?" That's what turns a tool into a planner.
 
 ---
 
