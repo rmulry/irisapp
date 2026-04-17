@@ -91,9 +91,11 @@ You have a search_vendors tool. Use it only when:
 - The user directly asks to find or see vendors for a category
 Never search automatically after onboarding. Always get a green light first.
 
-When you get search results, present them clearly — name, brief description, and why they might
-be a fit based on what you know about the couple's budget and preferences. Always tie results
-back to their specific budget allocation. Be direct about which ones look most promising.
+When you get search results back, they are already filtered to the best 1-3 matches with
+reasoning specific to this couple. Present them as your recommendations — not a list of options.
+Lead with your top pick ("I'd start with X — here's why"), then mention the others as alternatives.
+Add your voice: be warm, be direct, tell them what you'd do.
+Always end by offering to draft the inquiry email for the top pick immediately.
 
 If search results are thin or off-topic, acknowledge it and suggest the user search
 Instagram hashtags (e.g. #[city]weddingphotographer) for additional options.
@@ -734,9 +736,54 @@ def find_official_url(vendor_name: str) -> str | None:
         pass
     return None
 
-def search_vendors(query: str, category: str) -> str:
+def build_shortlist(raw_results: str, profile: dict, category: str) -> str:
+    """Run a secondary Claude call to pick the best 1-3 vendors with profile-specific reasoning."""
+    wedding_date = profile.get("wedding_date", "not set")
+    budget = profile.get("budget", "not specified")
+    location = profile.get("location", "not specified")
+    aesthetic = profile.get("aesthetic_profile") or {}
+    priorities = profile.get("priorities") or []
+    user_name = profile.get("user_name", "")
+
+    prompt = f"""You are helping a couple find a wedding {category}.
+
+Their profile:
+- Wedding date: {wedding_date}
+- Total budget: {budget}
+- Location: {location}
+- Top priorities: {', '.join(priorities) if priorities else 'not specified'}
+- Aesthetic: {json.dumps(aesthetic) if aesthetic else 'not captured yet'}
+
+Here are the raw search results:
+{raw_results}
+
+Pick the best 1-3 vendors from these results that genuinely fit this couple. Skip any that are clearly a bad match on budget, location, or style.
+
+For each pick, output exactly this format:
+
+**[Vendor Name]**
+[URL]
+Why this fits: [2-3 sentences specific to THIS couple — reference their budget range, aesthetic, location, or priorities. Be concrete, not generic. Never say "this vendor is great" — say WHY it fits them specifically.]
+
+After listing the picks, add one final line:
+START HERE: [Vendor Name] — [one sentence on why to contact this one first]
+
+Do not invent vendors. Only use vendors from the search results. Do not mention vendors that are a poor fit."""
+
     try:
-        results = tavily.search(query=query, max_results=5, search_depth="advanced")
+        response = client.messages.create(
+            model="claude-sonnet-4-6",
+            max_tokens=800,
+            messages=[{"role": "user", "content": prompt}],
+        )
+        return response.content[0].text.strip()
+    except Exception:
+        return raw_results
+
+
+def search_vendors(query: str, category: str, user_id: str = "") -> str:
+    try:
+        results = tavily.search(query=query, max_results=7, search_depth="advanced")
         items = results.get("results", [])
         if not items:
             return "No results found for this search."
@@ -747,7 +794,6 @@ def search_vendors(query: str, category: str) -> str:
             url = r.get("url", "").strip()
             snippet = r.get("content", "").strip()[:300]
 
-            # Try to resolve aggregator URLs to the vendor's real site
             if is_aggregator(url):
                 resolved = find_official_url(title)
                 if resolved and not is_aggregator(resolved):
@@ -763,7 +809,15 @@ def search_vendors(query: str, category: str) -> str:
 
         if not lines:
             return "No results found for this search."
-        return "\n\n---\n\n".join(lines)
+
+        raw_results = "\n\n---\n\n".join(lines)
+
+        if user_id:
+            profile = load_wedding_profile(user_id)
+            if profile:
+                return build_shortlist(raw_results, profile, category)
+
+        return raw_results
     except Exception as e:
         return f"Search unavailable: {str(e)}"
 
@@ -790,7 +844,8 @@ def chat(messages: list, current_user_id: str = "") -> str:
                     if block.name == "search_vendors":
                         result_text = search_vendors(
                             block.input["query"],
-                            block.input["category"]
+                            block.input["category"],
+                            current_user_id,
                         )
                         tool_results.append({
                             "type": "tool_result",
