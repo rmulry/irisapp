@@ -144,7 +144,7 @@ Always acknowledge the update conversationally — don't just silently call the 
 
 Keep responses concise — 2-4 sentences max unless summarizing the profile or presenting vendors.
 Never ask more than two questions at once.
-Start by warmly welcoming them and asking the first question."""
+Start by warmly welcoming them and asking for their name and their partner's name — this should always be the very first thing you ask. Use their names naturally throughout the conversation from that point on."""
 
 TOOLS = [
     {
