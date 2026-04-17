@@ -912,6 +912,9 @@ if "timeline" not in st.session_state:
 if "vendors" not in st.session_state:
     st.session_state.vendors = None
 
+if "followup_checked" not in st.session_state:
+    st.session_state.followup_checked = False
+
 # ── Sign out + Timeline sidebar ───────────────────────────────────────────────
 
 # Load timeline and vendors from DB on return visits
@@ -1107,6 +1110,42 @@ if st.session_state.planning_stage and not st.session_state.tot_complete:
             st.rerun()
 
     st.stop()
+
+# ── Proactive follow-up check ─────────────────────────────────────────────────
+
+def get_followup_vendors(vendors: list, days: int = 5) -> list:
+    """Return vendors in 'contacted' status for more than `days` days."""
+    from datetime import datetime, timedelta
+    cutoff = date.today() - timedelta(days=days)
+    overdue = []
+    for v in vendors:
+        if v.get("status") != "contacted":
+            continue
+        contacted_at = v.get("contacted_at")
+        if not contacted_at:
+            continue
+        try:
+            contacted_date = datetime.fromisoformat(str(contacted_at)).date()
+            if contacted_date <= cutoff:
+                overdue.append(v)
+        except Exception:
+            pass
+    return overdue
+
+if (st.session_state.messages
+        and not st.session_state.followup_checked
+        and st.session_state.vendors):
+    st.session_state.followup_checked = True
+    overdue = get_followup_vendors(st.session_state.vendors)
+    if overdue:
+        names = [v["name"] for v in overdue]
+        if len(names) == 1:
+            nudge = f"Hey — you reached out to **{names[0]}** and haven't heard back yet. Want me to draft a follow-up?"
+        else:
+            listed = ", ".join(names[:-1]) + f" and {names[-1]}"
+            nudge = f"Hey — you reached out to **{listed}** and haven't heard back from any of them. Want me to draft follow-ups?"
+        save_message(user_id, "assistant", nudge)
+        st.session_state.messages.append({"role": "assistant", "content": nudge})
 
 # ── Start conversation if empty ───────────────────────────────────────────────
 
