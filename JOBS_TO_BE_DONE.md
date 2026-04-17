@@ -64,7 +64,22 @@ Decision fatigue is the #1 pain point surfaced in user research (Reddit). Every 
 
 ---
 
-### 5. "Help me feel less alone in this"
+### 5. "Help me manage my people"
+Planning a wedding means managing vendors *and* managing people — a fiancé who's less engaged, a mom with opinions, a FMIL with expectations, a bridal party with scheduling conflicts, and 150 guests who have questions that are already answered on the wedding website but will text the bride anyway.
+
+**What Iris does (bride-facing):** Language and scripts for hard conversations — how to tell your mom you're not using her florist, how to set expectations with a disengaged partner, how to respond to opinionated family members without starting a fight. Eventually: draft communications the bride can send to her inner circle.
+
+**What Iris does (guest-facing):** A dedicated SMS number guests can text instead of the bride. Iris answers from the wedding profile — venue address, dress code, parking, hotel block, registry. If a guest asks something Iris doesn't know, it flags the bride inside the app: "Someone asked about the rehearsal dinner start time — want me to add that?" The bride answers once, Iris knows forever. Every question Iris intercepts is a question that doesn't interrupt the bride's day.
+
+**Why guests will use it:** They don't need to download anything. They text a number. The bride puts it in the wedding website footer: *"Questions? Text Iris."* Guests already know how to text.
+
+**Viral loop:** Every guest who texts that number sees "Iris, AI wedding planner." Some percentage of those guests are engaged or will be.
+
+**Success signal:** Bride reports fewer direct messages from guests. Iris answers at least 10 guest questions without bride involvement.
+
+---
+
+### 6. "Help me feel less alone in this"
 Planning a wedding is isolating. Partners are often less engaged. Family adds pressure instead of relief. Friends have opinions but not expertise. The bride wants someone in her corner who knows what they're doing and isn't emotionally invested in the outcome.
 
 **What Iris does:** Warm, confident conversational tone. Iris remembers everything. Iris doesn't judge the budget or the guest list. Iris is always available.
@@ -116,6 +131,7 @@ A single category (especially venue) can take weeks or months with multiple back
 | Communication | First-touch email ✓, no thank you email ✓, vendor tracker ✓ | Missing follow-up drafts, richer status model (toured, negotiating) |
 | Make decisions | This or That exists ✓ | Aesthetic data too thin to drive real recommendations yet |
 | Feel less alone | Conversational tone ✓, proactive follow-up nudge ✓ | Missing vendor status dashboard — user shouldn't have to ask Iris what's happening |
+| Manage my people | Not started | Guest SMS number (Twilio) + bride-facing scripts for hard conversations (V2) |
 
 **Vendor status dashboard (priority for V1):** The user should be able to see at a glance — without asking Iris — where every vendor stands across every category. Contacted, toured, negotiating, booked, passed. This is the command center. Right now it lives as a small sidebar panel; it needs to be a first-class view the user can open anytime.
 
@@ -138,4 +154,5 @@ Iris does the job if:
 Iris does the job if:
 - User books at least one vendor with Iris's direct involvement
 - Iris proactively surfaces the right next step without being asked
+- Iris answers at least 10 guest questions without the bride's involvement
 - User describes Iris as "my wedding planner" not "an app I use"

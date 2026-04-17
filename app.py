@@ -136,11 +136,16 @@ After drafting, tell them to copy it and send from their own email.
 Then ask: who else on the list do you want to reach out to?
 
 When the user tells you a vendor responded, use update_vendor_status to log it.
+When they schedule a tour or meeting, update to "meeting_scheduled".
+When they complete a tour or site visit, update to "toured".
+When they want to go back for a second look or revisit a vendor, update to "second_look".
+When they're actively negotiating price or contract terms, update to "negotiating".
 When they say a vendor is unavailable, update to "unavailable".
 When they book someone, update to "booked" and offer to draft "no thank you" emails to others in that category.
 When they decide to pass on a vendor, update to "passed".
 If they mention a price quoted, capture it in quoted_price.
 Always acknowledge the update conversationally — don't just silently call the tool.
+After a tour, always ask how it went and whether they want to move forward, go back for a second look, or keep looking.
 
 Keep responses concise — 2-4 sentences max unless summarizing the profile or presenting vendors.
 Never ask more than two questions at once.
@@ -219,7 +224,7 @@ TOOLS = [
                 },
                 "status": {
                     "type": "string",
-                    "enum": ["researching", "contacted", "responded", "meeting_scheduled", "booked", "passed", "unavailable"],
+                    "enum": ["researching", "contacted", "responded", "meeting_scheduled", "toured", "second_look", "negotiating", "booked", "passed", "unavailable"],
                     "description": "New status for the vendor"
                 },
                 "notes": {
@@ -280,6 +285,10 @@ def update_vendor(user_id: str, name: str, status: str,
         update["quoted_price"] = quoted_price
     if status == "responded":
         update["responded_at"] = date.today().isoformat()
+    if status == "toured":
+        update["toured_at"] = date.today().isoformat()
+    if status == "booked":
+        update["booked_at"] = date.today().isoformat()
     supabase.table("vendors") \
         .update(update) \
         .eq("session_id", user_id) \
@@ -1031,36 +1040,6 @@ with st.sidebar:
                 suggested = e.get("suggested_date", "TBD")
                 st.markdown(f"• {e['event']}{optional}  \n*{suggested}*")
 
-    # ── Vendor Tracker ────────────────────────────────────────────────────
-    vendors = st.session_state.vendors or []
-    if vendors:
-        st.divider()
-        st.markdown("**Vendor Tracker**")
-        STATUS_ICON = {
-            "researching": "🔍",
-            "contacted": "📤",
-            "responded": "💬",
-            "meeting_scheduled": "📅",
-            "booked": "✅",
-            "passed": "❌",
-            "unavailable": "🚫",
-        }
-        by_category = {}
-        for v in vendors:
-            cat = v.get("category", "Other").title()
-            by_category.setdefault(cat, []).append(v)
-        for cat, cat_vendors in by_category.items():
-            st.caption(cat)
-            for v in cat_vendors:
-                icon = STATUS_ICON.get(v.get("status", "contacted"), "📤")
-                name = v.get("name", "")
-                quote = v.get("quoted_price")
-                quote_str = f" · ~{int(quote):,}" if quote else ""
-                notes = v.get("notes", "")
-                label = f"{icon} {name}{quote_str}"
-                if notes:
-                    label += f"  \n*{notes[:60]}*"
-                st.markdown(label)
 
 # ── This or That helpers ──────────────────────────────────────────────────────
 
@@ -1180,61 +1159,59 @@ if st.session_state.planning_stage and not st.session_state.tot_complete:
 
     st.stop()
 
-# ── Proactive follow-up check ─────────────────────────────────────────────────
+# ── Helpers ───────────────────────────────────────────────────────────────────
+
+STATUS_ICON = {
+    "researching": "🔍",
+    "contacted": "📤",
+    "responded": "💬",
+    "meeting_scheduled": "📅",
+    "toured": "🏛️",
+    "second_look": "👀",
+    "negotiating": "🤝",
+    "booked": "✅",
+    "passed": "❌",
+    "unavailable": "🚫",
+}
+
+STATUS_LABEL = {
+    "researching": "Researching",
+    "contacted": "Contacted",
+    "responded": "Responded",
+    "meeting_scheduled": "Meeting Scheduled",
+    "toured": "Toured",
+    "second_look": "Second Look",
+    "negotiating": "Negotiating",
+    "booked": "Booked",
+    "passed": "Passed",
+    "unavailable": "Unavailable",
+}
+
+ACTIVE_STATUSES = {"researching", "contacted", "responded", "meeting_scheduled", "toured", "second_look", "negotiating"}
 
 def get_followup_vendors(vendors: list, days: int = 5) -> list:
-    """Return vendors in 'contacted' status for more than `days` days."""
+    """Return vendors that need a follow-up nudge based on status and elapsed time."""
     from datetime import datetime, timedelta
-    cutoff = date.today() - timedelta(days=days)
     overdue = []
     for v in vendors:
-        if v.get("status") != "contacted":
+        status = v.get("status")
+        if status == "contacted":
+            ref_date_str = v.get("contacted_at")
+            cutoff = date.today() - timedelta(days=days)
+        elif status == "toured":
+            ref_date_str = v.get("toured_at")
+            cutoff = date.today() - timedelta(days=3)
+        else:
             continue
-        contacted_at = v.get("contacted_at")
-        if not contacted_at:
+        if not ref_date_str:
             continue
         try:
-            contacted_date = datetime.fromisoformat(str(contacted_at)).date()
-            if contacted_date <= cutoff:
+            ref_date = datetime.fromisoformat(str(ref_date_str)).date()
+            if ref_date <= cutoff:
                 overdue.append(v)
         except Exception:
             pass
     return overdue
-
-if (st.session_state.messages
-        and not st.session_state.followup_checked
-        and st.session_state.vendors):
-    st.session_state.followup_checked = True
-    overdue = get_followup_vendors(st.session_state.vendors)
-    if overdue:
-        names = [v["name"] for v in overdue]
-        if len(names) == 1:
-            nudge = f"Hey — you reached out to **{names[0]}** and haven't heard back yet. Want me to draft a follow-up?"
-        else:
-            listed = ", ".join(names[:-1]) + f" and {names[-1]}"
-            nudge = f"Hey — you reached out to **{listed}** and haven't heard back from any of them. Want me to draft follow-ups?"
-        save_message(user_id, "assistant", nudge)
-        st.session_state.messages.append({"role": "assistant", "content": nudge})
-
-# ── Start conversation if empty ───────────────────────────────────────────────
-
-if not st.session_state.messages and st.session_state.planning_stage:
-    parts = [st.session_state.planning_stage]
-    if st.session_state.user_priorities:
-        parts.append(f"Things I want to personally decide: {', '.join(st.session_state.user_priorities)}.")
-    if st.session_state.user_delegated:
-        parts.append(f"Things I'm happy to hand off to Iris: {', '.join(st.session_state.user_delegated)}.")
-    if st.session_state.tot_selections:
-        prefs = [f"{s['category']}: chose {s['chosen_label']} over {s['rejected_label']}"
-                 for s in st.session_state.tot_selections]
-        parts.append("Aesthetic preferences from style quiz: " + ", ".join(prefs) + ".")
-    seed = " ".join(parts)
-    with st.spinner(""):
-        opening = chat([{"role": "user", "content": seed}], user_id)
-    save_message(user_id, "assistant", opening)
-    st.session_state.messages.append({"role": "assistant", "content": opening})
-
-# ── Render chat history ───────────────────────────────────────────────────────
 
 def render_message(content: str):
     """Render a message, detecting and styling email drafts specially."""
@@ -1245,7 +1222,6 @@ def render_message(content: str):
         draft_block = rest[0].strip()
         after = rest[1].replace("$", r"\$") if len(rest) > 1 else ""
 
-        # Separate contact line from email body
         contact_line = ""
         form_url = None
         email_body = draft_block
@@ -1254,7 +1230,6 @@ def render_message(content: str):
                 contact_line = line
                 email_body = draft_block.replace(line, "").strip()
             elif line.startswith("No email found"):
-                # Extract URL from the line
                 import re
                 urls = re.findall(r"https?://\S+", line)
                 form_url = urls[0] if urls else None
@@ -1265,64 +1240,195 @@ def render_message(content: str):
 
         if before.strip():
             st.markdown(before)
-
         if contact_line:
             st.markdown(f"**{contact_line}**")
-
         st.markdown("**📧 Copy this message:**")
         st.code(email_body, language=None)
-
         if form_url:
-            st.markdown(f"**No email found — paste this message into their contact form:**")
+            st.markdown("**No email found — paste this message into their contact form:**")
             st.markdown(f"[Open contact form →]({form_url})")
-
         if after.strip():
             st.markdown(after)
     else:
         st.markdown(content.replace("$", r"\$"))
 
+# ── Main tabs ─────────────────────────────────────────────────────────────────
 
-for msg in st.session_state.messages:
-    with st.chat_message("assistant" if msg["role"] == "assistant" else "user",
-                         avatar="🌸" if msg["role"] == "assistant" else "👤"):
-        render_message(msg["content"])
+tab_chat, tab_vendors = st.tabs(["💬 Chat with Iris", "📊 My Vendors"])
 
-# ── Profile complete state ────────────────────────────────────────────────────
+# ── Tab 1: Chat ───────────────────────────────────────────────────────────────
 
-if get_profile_complete(st.session_state.messages):
-    st.session_state.profile_complete = True
+with tab_chat:
 
-if st.session_state.profile_complete:
-    st.success("✓ Your wedding profile is ready. More features coming soon!")
+    # Proactive follow-up check
+    if (st.session_state.messages
+            and not st.session_state.followup_checked
+            and st.session_state.vendors):
+        st.session_state.followup_checked = True
+        overdue = get_followup_vendors(st.session_state.vendors)
+        if overdue:
+            names = [v["name"] for v in overdue]
+            if len(names) == 1:
+                nudge = f"Hey — you reached out to **{names[0]}** and haven't heard back yet. Want me to draft a follow-up?"
+            else:
+                listed = ", ".join(names[:-1]) + f" and {names[-1]}"
+                nudge = f"Hey — you reached out to **{listed}** and haven't heard back from any of them. Want me to draft follow-ups?"
+            save_message(user_id, "assistant", nudge)
+            st.session_state.messages.append({"role": "assistant", "content": nudge})
 
-# ── Input ─────────────────────────────────────────────────────────────────────
-
-if prompt := st.chat_input("Tell Iris..."):
-    save_message(user_id, "user", prompt)
-    st.session_state.messages.append({"role": "user", "content": prompt})
-    with st.chat_message("user", avatar="👤"):
-        st.write(prompt)
-
-    with st.chat_message("assistant", avatar="🌸"):
+    # Start conversation if empty
+    if not st.session_state.messages and st.session_state.planning_stage:
+        parts = [st.session_state.planning_stage]
+        if st.session_state.user_priorities:
+            parts.append(f"Things I want to personally decide: {', '.join(st.session_state.user_priorities)}.")
+        if st.session_state.user_delegated:
+            parts.append(f"Things I'm happy to hand off to Iris: {', '.join(st.session_state.user_delegated)}.")
+        if st.session_state.tot_selections:
+            prefs = [f"{s['category']}: chose {s['chosen_label']} over {s['rejected_label']}"
+                     for s in st.session_state.tot_selections]
+            parts.append("Aesthetic preferences from style quiz: " + ", ".join(prefs) + ".")
+        seed = " ".join(parts)
         with st.spinner(""):
-            reply = chat(st.session_state.messages, user_id)
-        render_message(reply)
+            opening = chat([{"role": "user", "content": seed}], user_id)
+        save_message(user_id, "assistant", opening)
+        st.session_state.messages.append({"role": "assistant", "content": opening})
 
-    save_message(user_id, "assistant", reply)
-    st.session_state.messages.append({"role": "assistant", "content": reply})
-    st.session_state.vendors = load_vendors(user_id)
+    # Render chat history
+    for msg in st.session_state.messages:
+        with st.chat_message("assistant" if msg["role"] == "assistant" else "user",
+                             avatar="🌸" if msg["role"] == "assistant" else "👤"):
+            render_message(msg["content"])
 
-    # Extract profile and generate timeline when onboarding completes
     if get_profile_complete(st.session_state.messages):
-        if not profile_already_saved(user_id):
-            extract_and_save_profile(user_id, st.session_state.messages)
-        if not st.session_state.get("timeline_generated") and not timeline_already_saved(user_id):
-            st.session_state.timeline_generated = True
-            with st.spinner("Building your planning timeline..."):
-                st.session_state.timeline = generate_and_save_timeline(
-                    user_id, st.session_state.messages
-                )
-        else:
-            st.session_state.timeline_generated = True
+        st.session_state.profile_complete = True
 
-    st.rerun()
+    # Chat input
+    if prompt := st.chat_input("Tell Iris..."):
+        save_message(user_id, "user", prompt)
+        st.session_state.messages.append({"role": "user", "content": prompt})
+        with st.chat_message("user", avatar="👤"):
+            st.write(prompt)
+
+        with st.chat_message("assistant", avatar="🌸"):
+            with st.spinner(""):
+                reply = chat(st.session_state.messages, user_id)
+            render_message(reply)
+
+        save_message(user_id, "assistant", reply)
+        st.session_state.messages.append({"role": "assistant", "content": reply})
+        st.session_state.vendors = load_vendors(user_id)
+
+        if get_profile_complete(st.session_state.messages):
+            if not profile_already_saved(user_id):
+                extract_and_save_profile(user_id, st.session_state.messages)
+            if not st.session_state.get("timeline_generated") and not timeline_already_saved(user_id):
+                st.session_state.timeline_generated = True
+                with st.spinner("Building your planning timeline..."):
+                    st.session_state.timeline = generate_and_save_timeline(
+                        user_id, st.session_state.messages
+                    )
+            else:
+                st.session_state.timeline_generated = True
+
+        st.rerun()
+
+# ── Tab 2: Vendor Dashboard ───────────────────────────────────────────────────
+
+with tab_vendors:
+    vendors = st.session_state.vendors or []
+
+    if not vendors:
+        st.markdown("### Your vendor tracker")
+        st.caption("Once you start searching for vendors and reaching out, they'll all show up here — organized by category, with status updates as things progress.")
+        st.stop()
+
+    # Summary bar
+    booked = [v for v in vendors if v.get("status") == "booked"]
+    active = [v for v in vendors if v.get("status") in ACTIVE_STATUSES]
+    passed = [v for v in vendors if v.get("status") in {"passed", "unavailable"}]
+
+    col_a, col_b, col_c = st.columns(3)
+    col_a.metric("Booked", len(booked))
+    col_b.metric("In Progress", len(active))
+    col_c.metric("Passed", len(passed))
+
+    st.divider()
+
+    # Group by category
+    by_category = {}
+    for v in vendors:
+        cat = v.get("category", "Other").title()
+        by_category.setdefault(cat, []).append(v)
+
+    # Sort categories: ones with a booked vendor first, then active, then others
+    def cat_sort_key(item):
+        cat, vlist = item
+        statuses = {v.get("status") for v in vlist}
+        if "booked" in statuses:
+            return 0
+        if statuses & ACTIVE_STATUSES:
+            return 1
+        return 2
+
+    for cat, cat_vendors in sorted(by_category.items(), key=cat_sort_key):
+        booked_in_cat = any(v.get("status") == "booked" for v in cat_vendors)
+        cat_header = f"{'✅ ' if booked_in_cat else ''}{cat}"
+        st.markdown(f"### {cat_header}")
+
+        for v in cat_vendors:
+            status = v.get("status", "researching")
+            icon = STATUS_ICON.get(status, "🔍")
+            label = STATUS_LABEL.get(status, status.title())
+            name = v.get("name", "Unknown")
+            quote = v.get("quoted_price")
+            notes = v.get("notes", "")
+            url = v.get("url", "")
+
+            with st.container():
+                left, right = st.columns([3, 1])
+                with left:
+                    name_display = f"[{name}]({url})" if url else name
+                    st.markdown(f"**{name_display}**")
+                    st.caption(f"{icon} {label}" + (f"  ·  approx. {int(quote):,} dollars" if quote else ""))
+                    if notes:
+                        st.caption(f"📝 {notes}")
+                with right:
+                    if status not in {"booked", "passed", "unavailable"}:
+                        if st.button("Update", key=f"upd_{v.get('id', name)}", use_container_width=True):
+                            st.session_state["update_vendor_id"] = v.get("id")
+                            st.session_state["update_vendor_name"] = name
+                            st.session_state["update_vendor_cat"] = cat
+
+            st.divider()
+
+    # Inline status update form
+    if st.session_state.get("update_vendor_name"):
+        vname = st.session_state["update_vendor_name"]
+        vcat = st.session_state.get("update_vendor_cat", "")
+        st.markdown(f"**Update: {vname}**")
+        new_status = st.selectbox(
+            "New status",
+            options=["contacted", "responded", "meeting_scheduled", "toured", "second_look", "negotiating", "booked", "passed", "unavailable"],
+            key="dashboard_new_status",
+        )
+        new_notes = st.text_input("Notes (optional)", key="dashboard_notes")
+        new_price = st.number_input("Quoted price (optional)", min_value=0, value=0, step=100, key="dashboard_price")
+        col_save, col_cancel = st.columns(2)
+        with col_save:
+            if st.button("Save", type="primary", use_container_width=True):
+                update_vendor(
+                    user_id,
+                    vname,
+                    new_status,
+                    notes=new_notes or None,
+                    quoted_price=float(new_price) if new_price else None,
+                )
+                st.session_state.vendors = load_vendors(user_id)
+                for k in ["update_vendor_id", "update_vendor_name", "update_vendor_cat"]:
+                    st.session_state.pop(k, None)
+                st.rerun()
+        with col_cancel:
+            if st.button("Cancel", use_container_width=True):
+                for k in ["update_vendor_id", "update_vendor_name", "update_vendor_cat"]:
+                    st.session_state.pop(k, None)
+                st.rerun()
