@@ -827,12 +827,15 @@ if st.session_state.planning_stage is None:
 
 # ── Auth screen (after planning stage — they've had one interaction first) ────
 
-# TEST MODE: bypass auth with a fixed guest user ID
+# TEST MODE: bypass auth using ?tester=name in the URL
 TEST_MODE = True
-TEST_USER_ID = "test-user-iris-2026"
 
 if TEST_MODE and st.session_state.user is None:
-    st.session_state.user = type("User", (), {"id": TEST_USER_ID, "email": "guest@irisplanner.app"})()
+    params = st.query_params
+    tester = params.get("tester", "").strip().lower().replace(" ", "-")
+    if tester:
+        test_id = f"test-user-{tester}"
+        st.session_state.user = type("User", (), {"id": test_id, "email": f"{tester}@irisplanner.app"})()
 
 if st.session_state.user is None:
     st.markdown("**Create a free account to save your progress.**")
