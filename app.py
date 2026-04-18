@@ -139,7 +139,9 @@ Never mention The Knot, WeddingWire, or Zola.
 VENDOR EMAIL DRAFTING & TRACKING:
 After presenting vendor options, always offer to draft the inquiry email.
 Use the draft_vendor_email tool when the user wants to reach out to a specific vendor.
-After drafting, tell them to copy it and send from their own email.
+After drafting, tell them to copy it and send from their own email — the contact info is in the draft.
+Never tell the user to "find the website" or "look up the contact" themselves. The contact line in the
+email draft always has what they need — a direct email or a link to the contact form.
 Then ask: who else on the list do you want to reach out to?
 
 When the user tells you a vendor responded, use update_vendor_status to log it.
@@ -525,6 +527,8 @@ JUNK_DOMAINS = {"example.com", "sentry.io", "wixpress.com", "squarespace.com",
 
 def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
     """Returns (email_or_None, contact_url_or_None) by fetching the vendor site."""
+    if not vendor_url and vendor_name:
+        vendor_url = find_official_url(vendor_name) or ""
     if not vendor_url:
         return None, None
 
@@ -608,7 +612,14 @@ def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
         pass
 
     # Last resort: return the /contact page URL so user has somewhere to go
-    return None, base_url + "/contact"
+    if base_url and base_url != "://":
+        return None, base_url + "/contact"
+    # base_url was unusable — try one more time via name search
+    if vendor_name:
+        resolved = find_official_url(vendor_name)
+        if resolved:
+            return None, resolved + "/contact"
+    return None, None
 
 
 def draft_no_thank_you_email(vendor_name: str, vendor_category: str, user_id: str) -> str:
@@ -667,9 +678,14 @@ def draft_vendor_email(vendor_name: str, vendor_category: str, vendor_url: str, 
     if contact_email:
         contact_line = f"\n\nSend to: {contact_email}"
     elif contact_form_url:
-        contact_line = f"\n\nNo email found — use their contact form: {contact_form_url}"
+        contact_line = f"\n\nNo email found — paste this into their contact form: {contact_form_url}"
     else:
-        contact_line = "\n\nNo contact email found. Check their website directly."
+        # Try one more time by name before giving up
+        resolved = find_official_url(vendor_name)
+        if resolved:
+            contact_line = f"\n\nNo email found — paste this into their contact form: {resolved}/contact"
+        else:
+            contact_line = f"\n\nNo email found — search '{vendor_name} contact' to find their inquiry form."
 
     phone_line = f"\nPhone: {user_phone}" if user_phone else ""
 
