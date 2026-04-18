@@ -673,6 +673,20 @@ def draft_vendor_email(vendor_name: str, vendor_category: str, vendor_url: str, 
     sign_off = f"{user_name} & {partner_name}" if partner_name else user_name
     user_phone = profile.get("user_phone") or ""
 
+    # Look up the resolved URL from cache — more reliable than what Iris passes
+    # after it's been through the shortlist Claude call
+    cache = st.session_state.get("vendor_url_cache", {})
+    name_lower = vendor_name.lower()
+    cached_url = cache.get(name_lower)
+    if not cached_url:
+        # Fuzzy match: find any cache key that contains the vendor name or vice versa
+        for key, val in cache.items():
+            if name_lower in key or key in name_lower:
+                cached_url = val
+                break
+    if cached_url:
+        vendor_url = cached_url
+
     # Find contact info by crawling the vendor's site
     contact_email, contact_form_url = find_vendor_contact(vendor_url, vendor_name)
     if contact_email:
@@ -833,6 +847,10 @@ def search_vendors(query: str, category: str, user_id: str = "") -> str:
             if domain in seen_domains:
                 continue
             seen_domains.add(domain)
+
+            # Cache the resolved URL by vendor name for reliable lookup later
+            if "vendor_url_cache" in st.session_state:
+                st.session_state.vendor_url_cache[title.lower()] = url
 
             lines.append(f"**{title}**\n{url}\n{snippet}")
 
@@ -1054,6 +1072,9 @@ if "timeline" not in st.session_state:
 
 if "vendors" not in st.session_state:
     st.session_state.vendors = None
+
+if "vendor_url_cache" not in st.session_state:
+    st.session_state.vendor_url_cache = {}
 
 if "followup_checked" not in st.session_state:
     st.session_state.followup_checked = False
