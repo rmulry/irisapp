@@ -527,8 +527,69 @@ JUNK_DOMAINS = {"example.com", "sentry.io", "wixpress.com", "squarespace.com",
 
 PHONE_PATTERN = _re.compile(r'\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}')
 
+def lookup_vendor_contact_cache(name: str) -> dict | None:
+    """Check the global vendor_contacts table before hitting Tavily/Firecrawl."""
+    from datetime import date, timedelta
+    try:
+        result = supabase.table("vendor_contacts") \
+            .select("contact_email, contact_form_url, phone, url, last_verified") \
+            .ilike("name", name) \
+            .limit(1) \
+            .execute()
+        if not result.data:
+            return None
+        row = result.data[0]
+        # Treat as stale after 60 days
+        last_verified = row.get("last_verified")
+        if last_verified:
+            age = date.today() - date.fromisoformat(str(last_verified))
+            if age.days > 60:
+                return None
+        return row
+    except Exception:
+        return None
+
+
+def save_vendor_contact_cache(name: str, url: str, contact_email: str,
+                               contact_form_url: str, phone: str):
+    """Upsert a vendor contact into the global vendor_contacts table."""
+    try:
+        existing = supabase.table("vendor_contacts") \
+            .select("id") \
+            .ilike("name", name) \
+            .limit(1) \
+            .execute()
+        data = {
+            "name": name,
+            "url": url or "",
+            "contact_email": contact_email or "",
+            "contact_form_url": contact_form_url or "",
+            "phone": phone or "",
+            "last_verified": date.today().isoformat(),
+        }
+        if existing.data:
+            supabase.table("vendor_contacts") \
+                .update(data) \
+                .eq("id", existing.data[0]["id"]) \
+                .execute()
+        else:
+            supabase.table("vendor_contacts").insert(data).execute()
+    except Exception:
+        pass
+
+
 def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
     """Returns (email_or_None, contact_url_or_None, phone_or_None)."""
+
+    # ── Check global vendor contacts cache first ───────────────────────────────
+    if vendor_name:
+        cached = lookup_vendor_contact_cache(vendor_name)
+        if cached:
+            return (
+                cached.get("contact_email") or None,
+                cached.get("contact_form_url") or None,
+                cached.get("phone") or None,
+            )
 
     def clean_emails(text: str) -> list:
         found = EMAIL_PATTERN.findall(text)
@@ -556,6 +617,10 @@ def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
     # Search engines already know where each venue's inquiry form lives.
     # This handles cases like Gotham Hall (tripleseat.com) where the form
     # is on a completely different domain than the main website.
+    def cache_and_return(email, form_url, phone):
+        save_vendor_contact_cache(vendor_name, vendor_url, email, form_url, phone)
+        return email, form_url, phone
+
     contact_page_url = None
     try:
         results = tavily.search(
@@ -569,27 +634,27 @@ def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
             if not url or is_aggregator(url):
                 continue
             url_lower = url.lower()
-            # Prioritise URLs that look like contact/inquiry pages
             is_contact_page = any(kw in url_lower for kw in
                 ["contact", "inquiry", "enquiry", "event-inquiry", "party_request",
                  "booking", "request", "quote", "book-event"])
             emails = clean_emails(content)
             phones = clean_phones(content)
             if emails:
-                return emails[0], url if is_contact_page else None, phones[0] if phones else None
+                return cache_and_return(emails[0], url if is_contact_page else None, phones[0] if phones else None)
             if is_contact_page and not contact_page_url:
                 contact_page_url = url
     except Exception:
         pass
 
     if contact_page_url:
-        # Scrape it for email/phone before returning the URL
         content = scrape(contact_page_url)
         emails = clean_emails(content)
         phones = clean_phones(content)
-        return (emails[0] if emails else None,
-                contact_page_url,
-                phones[0] if phones else None)
+        return cache_and_return(
+            emails[0] if emails else None,
+            contact_page_url,
+            phones[0] if phones else None,
+        )
 
     # ── Step 2: Firecrawl the vendor homepage ──────────────────────────────────
     from urllib.parse import urlparse
@@ -607,7 +672,7 @@ def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
             emails = clean_emails(content)
             phones = clean_phones(content)
             if emails:
-                return emails[0], None, phones[0] if phones else None
+                return cache_and_return(emails[0], None, phones[0] if phones else None)
 
             # Look for contact/inquiry links embedded in the homepage
             links = extract_contact_links(content)
@@ -615,9 +680,11 @@ def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
                 contact_content = scrape(links[0])
                 emails = clean_emails(contact_content)
                 phones = clean_phones(contact_content)
-                return (emails[0] if emails else None,
-                        links[0],
-                        phones[0] if phones else None)
+                return cache_and_return(
+                    emails[0] if emails else None,
+                    links[0],
+                    phones[0] if phones else None,
+                )
 
             # Try /contact and /event-inquiry
             for path in ["/contact", "/event-inquiry", "/contact-us", "/inquire"]:
@@ -625,9 +692,11 @@ def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
                 if page:
                     emails = clean_emails(page)
                     phones = clean_phones(page)
-                    return (emails[0] if emails else None,
-                            base_url + path,
-                            phones[0] if phones else None)
+                    return cache_and_return(
+                        emails[0] if emails else None,
+                        base_url + path,
+                        phones[0] if phones else None,
+                    )
 
     return None, None, None
 
