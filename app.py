@@ -75,8 +75,6 @@ Always use "dollars" not "$" to avoid formatting issues.
 Do this math in the conversation — never say "depending on your budget" when you have the number.
 
 THE DEEPER STUFF (what separates a real planner from a checklist):
-- How do you want guests to feel walking in? Walking out? What's the one thing you want people
-  to say the day after? (This is more useful than aesthetic categories.)
 - Who's involved in decisions — is it just the two of you, or are family members or financial
   contributors who expect a say? This changes everything about how Iris helps.
 - What part of planning are you most dreading? (This tells Iris where to carry the most weight.)
@@ -86,14 +84,13 @@ THE DEEPER STUFF (what separates a real planner from a checklist):
 CEREMONY:
 - Ceremony type (religious, civil, cultural traditions to incorporate)
 
-PRIORITIES & DELEGATION:
-- What matters MOST — the 2-3 things they want to be absolutely perfect
-- What they would happily delegate — things they don't want to spend energy on but still want
-  final approval over (common answers: cake, florals, invitations, transportation, linens,
-  stationery). Make clear that Iris will handle these and just check in before anything is booked.
+DELEGATION:
+- What would they happily hand off and not think about again? Common answers: cake, florals,
+  invitations, transportation, linens, stationery. Make clear that Iris will handle these
+  and only check in before anything is booked.
 
-The delegation question is the most important. It tells you where to focus their energy and
-what you can handle for them.
+The delegation question is important — it tells you where to focus their energy and what you
+can take off their plate entirely.
 
 Once you have all of this, summarize their wedding profile back to them warmly and clearly,
 including which categories they've delegated to Iris. End the summary with the exact phrase:
@@ -1028,10 +1025,10 @@ if "tot_pair_idx" not in st.session_state:
     st.session_state.tot_pair_idx = 0
 
 if "user_priorities" not in st.session_state:
-    st.session_state.user_priorities = None
+    st.session_state.user_priorities = []
 
 if "user_delegated" not in st.session_state:
-    st.session_state.user_delegated = None
+    st.session_state.user_delegated = []
 
 if "filtered_categories" not in st.session_state:
     st.session_state.filtered_categories = None
@@ -1118,35 +1115,7 @@ def extract_and_save_aesthetic(user_id: str, selections: list):
         return {}
 
 
-# ── Step 2: Priorities & delegation ──────────────────────────────────────────
-
-if not st.session_state.messages and st.session_state.user_priorities is None:
-    st.markdown("### What matters most to you?")
-    st.caption("Select everything you want to be hands-on with.")
-    priorities = st.multiselect(
-        "I want to personally decide:",
-        VENDOR_CATEGORIES,
-        default=["Venue", "Photography"],
-        label_visibility="collapsed",
-    )
-
-    st.markdown("### What would you happily hand off?")
-    st.caption("Iris will handle these and only check in before anything is booked.")
-    remaining = [c for c in VENDOR_CATEGORIES if c not in priorities]
-    delegated = st.multiselect(
-        "Iris can handle:",
-        remaining,
-        label_visibility="collapsed",
-    )
-
-    if st.button("Continue", type="primary", use_container_width=True):
-        st.session_state.user_priorities = priorities
-        st.session_state.user_delegated = delegated
-        st.session_state.filtered_categories = get_filtered_categories(priorities, delegated)
-        st.rerun()
-    st.stop()
-
-# ── Step 3: This or That game ─────────────────────────────────────────────────
+# ── This or That game (skipped — deprecated in V2) ───────────────────────────
 
 if st.session_state.planning_stage and not st.session_state.tot_complete:
     filtered_cats = st.session_state.filtered_categories or []
