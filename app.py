@@ -34,11 +34,10 @@ Ask questions conversationally, one or two at a time. Don't overwhelm.
 Be warm, occasionally playful, and always reassuring. When someone seems stressed,
 acknowledge it before moving on.
 
-The user will tell you where they are in the planning process before the conversation starts.
-Use that to adapt your approach:
-- "Just got engaged" → start from the very beginning, build everything fresh
-- "A few months in" → first ask what's already booked or decided before making recommendations
-- "Further along / overwhelmed" → start by taking inventory of what exists, identify gaps, and bring calm and order
+After asking for names, ask where they are in the planning process. Adapt your approach based on their answer:
+- Just got engaged → start from the very beginning, build everything fresh
+- A few months in → first ask what's already booked or decided before making recommendations
+- Further along / overwhelmed → start by taking inventory of what exists, identify gaps, bring calm and order
 
 You need to learn (in a natural conversational order, not as a list):
 
@@ -956,28 +955,9 @@ if "auth_mode" not in st.session_state:
     st.session_state.auth_mode = "signup"
 
 if "planning_stage" not in st.session_state:
-    st.session_state.planning_stage = None
+    st.session_state.planning_stage = True
 
-# ── Step 1: Planning stage (before auth — first thing they see) ───────────────
-
-if st.session_state.planning_stage is None:
-    st.markdown("### Where are you in the planning process?")
-    col1, col2, col3 = st.columns(3)
-    with col1:
-        if st.button("💍 Just got engaged\nStarting from scratch", use_container_width=True):
-            st.session_state.planning_stage = "Just got engaged — starting from scratch."
-            st.rerun()
-    with col2:
-        if st.button("📋 A few months in\nHave some things figured out", use_container_width=True):
-            st.session_state.planning_stage = "A few months in — have some things already figured out or booked."
-            st.rerun()
-    with col3:
-        if st.button("😅 Further along\nOverwhelmed, need help", use_container_width=True):
-            st.session_state.planning_stage = "Further along in planning — feeling overwhelmed and need help getting organized."
-            st.rerun()
-    st.stop()
-
-# ── Auth screen (after planning stage — they've had one interaction first) ────
+# ── Auth screen ───────────────────────────────────────────────────────────────
 
 # TEST MODE: bypass auth using ?tester=name in the URL
 TEST_MODE = True
@@ -1079,7 +1059,7 @@ with st.sidebar:
     if st.button("Sign out"):
         supabase.auth.sign_out()
         for key in ["user", "messages", "profile_complete", "auth_mode", "timeline",
-                    "planning_stage", "user_priorities", "user_delegated",
+                    "user_priorities", "user_delegated",
                     "filtered_categories", "tot_complete", "tot_selections",
                     "tot_cat_idx", "tot_pair_idx"]:
             st.session_state.pop(key, None)
@@ -1349,8 +1329,8 @@ with tab_chat:
             st.session_state.messages.append({"role": "assistant", "content": nudge})
 
     # Start conversation if empty
-    if not st.session_state.messages and st.session_state.planning_stage:
-        parts = [st.session_state.planning_stage]
+    if not st.session_state.messages:
+        parts = []
         if st.session_state.user_priorities:
             parts.append(f"Things I want to personally decide: {', '.join(st.session_state.user_priorities)}.")
         if st.session_state.user_delegated:
@@ -1359,7 +1339,7 @@ with tab_chat:
             prefs = [f"{s['category']}: chose {s['chosen_label']} over {s['rejected_label']}"
                      for s in st.session_state.tot_selections]
             parts.append("Aesthetic preferences from style quiz: " + ", ".join(prefs) + ".")
-        seed = " ".join(parts)
+        seed = " ".join(parts) if parts else "start"
         with st.spinner(""):
             opening = chat([{"role": "user", "content": seed}], user_id)
         save_message(user_id, "assistant", opening)
