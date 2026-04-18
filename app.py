@@ -525,18 +525,17 @@ JUNK_DOMAINS = {"example.com", "sentry.io", "wixpress.com", "squarespace.com",
                 "wordpress.com", "googleapis.com", "schema.org"}
 
 
+PHONE_PATTERN = _re.compile(r'\(?\d{3}\)?[\s.\-]?\d{3}[\s.\-]?\d{4}')
+
 def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
-    """Returns (email_or_None, contact_url_or_None) by fetching the vendor site."""
-    if not vendor_url and vendor_name:
-        vendor_url = find_official_url(vendor_name) or ""
-    if not vendor_url:
-        return None, None
+    """Returns (email_or_None, contact_url_or_None, phone_or_None)."""
 
     def clean_emails(text: str) -> list:
         found = EMAIL_PATTERN.findall(text)
         return [e for e in found if e.split("@")[-1].lower() not in JUNK_DOMAINS]
 
-    from urllib.parse import urlparse
+    def clean_phones(text: str) -> list:
+        return PHONE_PATTERN.findall(text)
 
     def scrape(url: str) -> str:
         try:
@@ -545,81 +544,92 @@ def find_vendor_contact(vendor_url: str, vendor_name: str = "") -> tuple:
         except Exception:
             return ""
 
-    def try_site(base: str) -> tuple:
-        """Try homepage, /contact, /contact-us on a given base URL."""
-        # Homepage
-        content = scrape(base)
-        emails = clean_emails(content)
-        if emails:
-            return emails[0], None
+    def extract_contact_links(content: str) -> list:
+        """Pull any contact/inquiry/booking/event URLs out of scraped markdown."""
+        CONTACT_KEYWORDS = ["contact", "inquiry", "enquiry", "event", "booking",
+                            "request", "party_request", "quote", "book"]
+        urls = _re.findall(r'https?://[^\s\)\]\"\']+', content)
+        return [u for u in urls if any(kw in u.lower() for kw in CONTACT_KEYWORDS)
+                and not is_aggregator(u)]
 
-        # /contact
-        contact = base + "/contact"
-        c = scrape(contact)
-        if c:
-            emails = clean_emails(c)
-            if emails:
-                return emails[0], None
-            return None, contact
-
-        # /contact-us
-        cu = base + "/contact-us"
-        c2 = scrape(cu)
-        if c2:
-            emails = clean_emails(c2)
-            if emails:
-                return emails[0], None
-            return None, cu
-
-        # Homepage mentioned contact
-        if "contact" in content.lower():
-            return None, contact
-
-        return None, None
-
-    # If the URL is an aggregator, resolve to real site first
-    if is_aggregator(vendor_url):
-        resolved = find_official_url(vendor_name)
-        if resolved:
-            vendor_url = resolved
-
-    parsed = urlparse(vendor_url)
-    base_url = f"{parsed.scheme}://{parsed.netloc}"
-
-    email, form_url = try_site(base_url)
-    if email or form_url:
-        return email, form_url
-
-    # Fallback: search specifically for the vendor contact page
+    # ── Step 1: Tavily search for the contact page directly ────────────────────
+    # Search engines already know where each venue's inquiry form lives.
+    # This handles cases like Gotham Hall (tripleseat.com) where the form
+    # is on a completely different domain than the main website.
+    contact_page_url = None
     try:
-        search_result = tavily.search(
-            query=f"{vendor_name} contact email wedding",
-            max_results=5,
-            search_depth="basic"
+        results = tavily.search(
+            query=f"{vendor_name} wedding event inquiry contact form",
+            max_results=7,
+            search_depth="advanced",
         )
-        for r in search_result.get("results", []):
-            found_url = r.get("url", "")
-            if is_aggregator(found_url):
+        for r in results.get("results", []):
+            url = r.get("url", "")
+            content = r.get("content", "") or ""
+            if not url or is_aggregator(url):
                 continue
-            found_parsed = urlparse(found_url)
-            found_base = f"{found_parsed.scheme}://{found_parsed.netloc}"
-            if found_base == base_url:
-                continue
-            email, form_url = try_site(found_base)
-            if email or form_url:
-                return email, form_url
+            url_lower = url.lower()
+            # Prioritise URLs that look like contact/inquiry pages
+            is_contact_page = any(kw in url_lower for kw in
+                ["contact", "inquiry", "enquiry", "event-inquiry", "party_request",
+                 "booking", "request", "quote", "book-event"])
+            emails = clean_emails(content)
+            phones = clean_phones(content)
+            if emails:
+                return emails[0], url if is_contact_page else None, phones[0] if phones else None
+            if is_contact_page and not contact_page_url:
+                contact_page_url = url
     except Exception:
         pass
 
-    # Last resort: return the /contact page URL so user has somewhere to go
-    if base_url and base_url != "://":
-        return None, base_url + "/contact"
-    # base_url was unusable — try one more time via name search
-    if vendor_name:
-        resolved = find_official_url(vendor_name)
-        if resolved:
-            return None, resolved + "/contact"
-    return None, None
+    if contact_page_url:
+        # Scrape it for email/phone before returning the URL
+        content = scrape(contact_page_url)
+        emails = clean_emails(content)
+        phones = clean_phones(content)
+        return (emails[0] if emails else None,
+                contact_page_url,
+                phones[0] if phones else None)
+
+    # ── Step 2: Firecrawl the vendor homepage ──────────────────────────────────
+    from urllib.parse import urlparse
+
+    if not vendor_url and vendor_name:
+        vendor_url = find_official_url(vendor_name) or ""
+    if vendor_url and is_aggregator(vendor_url):
+        vendor_url = find_official_url(vendor_name) or vendor_url
+
+    if vendor_url:
+        parsed = urlparse(vendor_url)
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+        if base_url and base_url != "://":
+            content = scrape(base_url)
+            emails = clean_emails(content)
+            phones = clean_phones(content)
+            if emails:
+                return emails[0], None, phones[0] if phones else None
+
+            # Look for contact/inquiry links embedded in the homepage
+            links = extract_contact_links(content)
+            if links:
+                contact_content = scrape(links[0])
+                emails = clean_emails(contact_content)
+                phones = clean_phones(contact_content)
+                return (emails[0] if emails else None,
+                        links[0],
+                        phones[0] if phones else None)
+
+            # Try /contact and /event-inquiry
+            for path in ["/contact", "/event-inquiry", "/contact-us", "/inquire"]:
+                page = scrape(base_url + path)
+                if page:
+                    emails = clean_emails(page)
+                    phones = clean_phones(page)
+                    return (emails[0] if emails else None,
+                            base_url + path,
+                            phones[0] if phones else None)
+
+    return None, None, None
 
 
 def draft_no_thank_you_email(vendor_name: str, vendor_category: str, user_id: str) -> str:
@@ -688,20 +698,18 @@ def draft_vendor_email(vendor_name: str, vendor_category: str, vendor_url: str, 
         vendor_url = cached_url
 
     # Find contact info by crawling the vendor's site
-    contact_email, contact_form_url = find_vendor_contact(vendor_url, vendor_name)
+    contact_email, contact_form_url, vendor_phone = find_vendor_contact(vendor_url, vendor_name)
+
+    contact_line = ""
     if contact_email:
         contact_line = f"\n\nSend to: {contact_email}"
     elif contact_form_url:
         contact_line = f"\n\nNo email found — paste this into their contact form: {contact_form_url}"
     else:
-        # Try one more time by name before giving up
-        resolved = find_official_url(vendor_name)
-        if resolved:
-            contact_line = f"\n\nNo email found — paste this into their contact form: {resolved}/contact"
-        else:
-            contact_line = f"\n\nNo email found — search '{vendor_name} contact' to find their inquiry form."
+        contact_line = f"\n\nNo email found — search '{vendor_name} contact' to find their inquiry form."
 
-    phone_line = f"\nPhone: {user_phone}" if user_phone else ""
+    if vendor_phone:
+        contact_line += f"\nPhone: {vendor_phone}"
 
     prompt = f"""Draft a short, casual first-touch email to a wedding vendor checking availability.
 
